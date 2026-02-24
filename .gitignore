@@ -21,4 +21,5 @@ coverage.*
 
 # Project
 /trader
+/setup-keys
 .claude/
