@@ -38,7 +38,9 @@ risk:
 		t.Fatal(err)
 	}
 	defer os.Remove(f.Name())
-	f.Write([]byte(yaml))
+	if _, err := f.Write([]byte(yaml)); err != nil {
+		t.Fatal(err)
+	}
 	f.Close()
 
 	cfg, err := LoadFile(f.Name())
@@ -84,7 +86,9 @@ func TestLoadFileInvalidYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Remove(f.Name())
-	f.Write([]byte("{{invalid yaml"))
+	if _, err := f.Write([]byte("{{invalid yaml")); err != nil {
+		t.Fatal(err)
+	}
 	f.Close()
 
 	_, err = LoadFile(f.Name())
