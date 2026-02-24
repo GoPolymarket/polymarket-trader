@@ -20,5 +20,5 @@ coverage.*
 *~
 
 # Project
-trader
+/trader
 .claude/
