@@ -1,4 +1,24 @@
+# Go
 bin/
-trader
-.env
+dist/
+*.exe
+*.dll
 *.out
+coverage.*
+
+# Env
+.env
+.env.*
+!.env.example
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project
+trader
+.claude/
