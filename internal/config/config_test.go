@@ -70,3 +70,74 @@ func TestEnvOverride(t *testing.T) {
 		t.Fatal("expected dry run false from env")
 	}
 }
+
+func TestLoadFileInvalidPath(t *testing.T) {
+	_, err := LoadFile("/nonexistent/path/config.yaml")
+	if err == nil {
+		t.Fatal("expected error for invalid path")
+	}
+}
+
+func TestLoadFileInvalidYAML(t *testing.T) {
+	f, err := os.CreateTemp("", "bad-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.Write([]byte("{{invalid yaml"))
+	f.Close()
+
+	_, err = LoadFile(f.Name())
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+func TestApplyEnvAllVars(t *testing.T) {
+	t.Setenv("POLYMARKET_PK", "test-pk")
+	t.Setenv("POLYMARKET_API_KEY", "test-key")
+	t.Setenv("POLYMARKET_API_SECRET", "test-secret")
+	t.Setenv("POLYMARKET_API_PASSPHRASE", "test-pass")
+	t.Setenv("BUILDER_KEY", "builder-key")
+	t.Setenv("BUILDER_SECRET", "builder-secret")
+	t.Setenv("BUILDER_PASSPHRASE", "builder-pass")
+	t.Setenv("TRADER_DRY_RUN", "1")
+
+	cfg := Default()
+	cfg.ApplyEnv()
+
+	if cfg.PrivateKey != "test-pk" {
+		t.Fatalf("expected PrivateKey test-pk, got %s", cfg.PrivateKey)
+	}
+	if cfg.APIKey != "test-key" {
+		t.Fatalf("expected APIKey test-key, got %s", cfg.APIKey)
+	}
+	if cfg.APISecret != "test-secret" {
+		t.Fatalf("expected APISecret test-secret, got %s", cfg.APISecret)
+	}
+	if cfg.APIPassphrase != "test-pass" {
+		t.Fatalf("expected APIPassphrase test-pass, got %s", cfg.APIPassphrase)
+	}
+	if cfg.BuilderKey != "builder-key" {
+		t.Fatalf("expected BuilderKey builder-key, got %s", cfg.BuilderKey)
+	}
+	if cfg.BuilderSecret != "builder-secret" {
+		t.Fatalf("expected BuilderSecret builder-secret, got %s", cfg.BuilderSecret)
+	}
+	if cfg.BuilderPassphrase != "builder-pass" {
+		t.Fatalf("expected BuilderPassphrase builder-pass, got %s", cfg.BuilderPassphrase)
+	}
+	if !cfg.DryRun {
+		t.Fatal("expected DryRun true from env '1'")
+	}
+}
+
+func TestApplyEnvDryRunTrue(t *testing.T) {
+	t.Setenv("TRADER_DRY_RUN", "true")
+	cfg := Default()
+	cfg.DryRun = false
+	cfg.ApplyEnv()
+	if !cfg.DryRun {
+		t.Fatal("expected DryRun true from env 'true'")
+	}
+}
