@@ -1,0 +1,30 @@
+# config.yaml — polymarket-trader default configuration
+scan_interval: 10s
+dry_run: true
+log_level: info
+
+maker:
+  enabled: true
+  markets: []           # empty = auto-select
+  auto_select_top: 5
+  min_spread_bps: 20
+  spread_multiplier: 1.5
+  order_size_usdc: 25
+  refresh_interval: 5s
+  max_orders_per_market: 2
+
+taker:
+  enabled: true
+  markets: []
+  min_imbalance: 0.15
+  depth_levels: 3
+  amount_usdc: 20
+  max_slippage_bps: 30
+  cooldown: 60s
+  min_confidence_bps: 25
+
+risk:
+  max_open_orders: 20
+  max_daily_loss_usdc: 100
+  max_position_per_market: 50
+  emergency_stop: false
