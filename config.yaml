@@ -9,7 +9,7 @@ maker:
   auto_select_top: 2    # only 2 markets with $5
   min_spread_bps: 20
   spread_multiplier: 1.5
-  order_size_usdc: 2    # $2 per quote side
+  order_size_usdc: 1    # $1 per quote side
   refresh_interval: 5s
   max_orders_per_market: 2
   inventory_skew_bps: 30
@@ -21,7 +21,7 @@ taker:
   markets: []
   min_imbalance: 0.15
   depth_levels: 3
-  amount_usdc: 2        # $2 per take
+  amount_usdc: 1        # $1 per take
   max_slippage_bps: 30
   cooldown: 60s
   min_confidence_bps: 25
