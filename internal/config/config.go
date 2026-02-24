@@ -21,9 +21,10 @@ type Config struct {
 	DryRun       bool          `yaml:"dry_run"`
 	LogLevel     string        `yaml:"log_level"`
 
-	Maker MakerConfig `yaml:"maker"`
-	Taker TakerConfig `yaml:"taker"`
-	Risk  RiskConfig  `yaml:"risk"`
+	Maker    MakerConfig    `yaml:"maker"`
+	Taker    TakerConfig    `yaml:"taker"`
+	Risk     RiskConfig     `yaml:"risk"`
+	Selector SelectorConfig `yaml:"selector"`
 }
 
 type MakerConfig struct {
@@ -35,6 +36,10 @@ type MakerConfig struct {
 	OrderSizeUSDC      float64       `yaml:"order_size_usdc"`
 	RefreshInterval    time.Duration `yaml:"refresh_interval"`
 	MaxOrdersPerMarket int           `yaml:"max_orders_per_market"`
+
+	InventorySkewBps     float64 `yaml:"inventory_skew_bps"`
+	InventoryWidenFactor float64 `yaml:"inventory_widen_factor"`
+	MinOrderSizeUSDC     float64 `yaml:"min_order_size_usdc"`
 }
 
 type TakerConfig struct {
@@ -46,13 +51,31 @@ type TakerConfig struct {
 	MaxSlippageBps   float64       `yaml:"max_slippage_bps"`
 	Cooldown         time.Duration `yaml:"cooldown"`
 	MinConfidenceBps float64       `yaml:"min_confidence_bps"`
+
+	FlowWeight        float64       `yaml:"flow_weight"`
+	ImbalanceWeight   float64       `yaml:"imbalance_weight"`
+	ConvergenceWeight float64       `yaml:"convergence_weight"`
+	MinConvergenceBps float64       `yaml:"min_convergence_bps"`
+	FlowWindow        time.Duration `yaml:"flow_window"`
+	MinCompositeScore float64       `yaml:"min_composite_score"`
+}
+
+type SelectorConfig struct {
+	RescanInterval time.Duration `yaml:"rescan_interval"`
+	MinLiquidity   float64       `yaml:"min_liquidity"`
+	MinVolume24hr  float64       `yaml:"min_volume_24hr"`
+	MaxSpread      float64       `yaml:"max_spread"`
+	MinDaysToEnd   int           `yaml:"min_days_to_end"`
 }
 
 type RiskConfig struct {
-	MaxOpenOrders        int     `yaml:"max_open_orders"`
-	MaxDailyLossUSDC     float64 `yaml:"max_daily_loss_usdc"`
-	MaxPositionPerMarket float64 `yaml:"max_position_per_market"`
-	EmergencyStop        bool    `yaml:"emergency_stop"`
+	MaxOpenOrders        int           `yaml:"max_open_orders"`
+	MaxDailyLossUSDC     float64       `yaml:"max_daily_loss_usdc"`
+	MaxPositionPerMarket float64       `yaml:"max_position_per_market"`
+	EmergencyStop        bool          `yaml:"emergency_stop"`
+	StopLossPerMarket    float64       `yaml:"stop_loss_per_market"`
+	MaxDrawdownPct       float64       `yaml:"max_drawdown_pct"`
+	RiskSyncInterval     time.Duration `yaml:"risk_sync_interval"`
 }
 
 func Default() Config {
@@ -61,27 +84,46 @@ func Default() Config {
 		DryRun:       true,
 		LogLevel:     "info",
 		Maker: MakerConfig{
-			Enabled:            true,
-			AutoSelectTop:      5,
-			MinSpreadBps:       20,
-			SpreadMultiplier:   1.5,
-			OrderSizeUSDC:      25,
-			RefreshInterval:    5 * time.Second,
-			MaxOrdersPerMarket: 2,
+			Enabled:              true,
+			AutoSelectTop:        2,
+			MinSpreadBps:         20,
+			SpreadMultiplier:     1.5,
+			OrderSizeUSDC:        2,
+			RefreshInterval:      5 * time.Second,
+			MaxOrdersPerMarket:   2,
+			InventorySkewBps:     30,
+			InventoryWidenFactor: 0.5,
+			MinOrderSizeUSDC:     1,
 		},
 		Taker: TakerConfig{
-			Enabled:          true,
-			MinImbalance:     0.15,
-			DepthLevels:      3,
-			AmountUSDC:       20,
-			MaxSlippageBps:   30,
-			Cooldown:         60 * time.Second,
-			MinConfidenceBps: 25,
+			Enabled:           true,
+			MinImbalance:      0.15,
+			DepthLevels:       3,
+			AmountUSDC:        2,
+			MaxSlippageBps:    30,
+			Cooldown:          60 * time.Second,
+			MinConfidenceBps:  25,
+			FlowWeight:        0.3,
+			ImbalanceWeight:   0.5,
+			ConvergenceWeight: 0.2,
+			MinConvergenceBps: 50,
+			FlowWindow:        2 * time.Minute,
+			MinCompositeScore: 0.3,
 		},
 		Risk: RiskConfig{
-			MaxOpenOrders:        20,
-			MaxDailyLossUSDC:     100,
-			MaxPositionPerMarket: 50,
+			MaxOpenOrders:        6,
+			MaxDailyLossUSDC:     2,
+			MaxPositionPerMarket: 3,
+			StopLossPerMarket:    1,
+			MaxDrawdownPct:       0.30,
+			RiskSyncInterval:     5 * time.Second,
+		},
+		Selector: SelectorConfig{
+			RescanInterval: 5 * time.Minute,
+			MinLiquidity:   1000,
+			MinVolume24hr:  500,
+			MaxSpread:      0.10,
+			MinDaysToEnd:   2,
 		},
 	}
 }

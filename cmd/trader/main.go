@@ -66,7 +66,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	a := app.New(cfg, clobClient, wsClient, signer)
+	a := app.New(cfg, clobClient, wsClient, signer, sdkClient.Gamma, sdkClient.Data)
 
 	go func() {
 		<-sigCh

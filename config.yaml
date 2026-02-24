@@ -1,4 +1,4 @@
-# config.yaml — polymarket-trader default configuration
+# config.yaml — polymarket-trader default configuration ($5 capital)
 scan_interval: 10s
 dry_run: true
 log_level: info
@@ -6,25 +6,44 @@ log_level: info
 maker:
   enabled: true
   markets: []           # empty = auto-select
-  auto_select_top: 5
+  auto_select_top: 2    # only 2 markets with $5
   min_spread_bps: 20
   spread_multiplier: 1.5
-  order_size_usdc: 25
+  order_size_usdc: 2    # $2 per quote side
   refresh_interval: 5s
   max_orders_per_market: 2
+  inventory_skew_bps: 30
+  inventory_widen_factor: 0.5
+  min_order_size_usdc: 1
 
 taker:
   enabled: true
   markets: []
   min_imbalance: 0.15
   depth_levels: 3
-  amount_usdc: 20
+  amount_usdc: 2        # $2 per take
   max_slippage_bps: 30
   cooldown: 60s
   min_confidence_bps: 25
+  flow_weight: 0.3
+  imbalance_weight: 0.5
+  convergence_weight: 0.2
+  min_convergence_bps: 50
+  flow_window: 2m
+  min_composite_score: 0.3
 
 risk:
-  max_open_orders: 20
-  max_daily_loss_usdc: 100
-  max_position_per_market: 50
+  max_open_orders: 6
+  max_daily_loss_usdc: 2     # max $2 daily loss (40% of capital)
+  max_position_per_market: 3 # max $3 per market
   emergency_stop: false
+  stop_loss_per_market: 1    # $1 stop-loss per market
+  max_drawdown_pct: 0.30     # 30% drawdown = emergency stop
+  risk_sync_interval: 5s
+
+selector:
+  rescan_interval: 5m
+  min_liquidity: 1000
+  min_volume_24hr: 500
+  max_spread: 0.10
+  min_days_to_end: 2

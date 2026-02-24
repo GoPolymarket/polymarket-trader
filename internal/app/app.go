@@ -9,8 +9,11 @@ import (
 	"github.com/GoPolymarket/polymarket-go-sdk/pkg/clob"
 	"github.com/GoPolymarket/polymarket-go-sdk/pkg/clob/clobtypes"
 	"github.com/GoPolymarket/polymarket-go-sdk/pkg/clob/ws"
+	"github.com/GoPolymarket/polymarket-go-sdk/pkg/data"
+	"github.com/GoPolymarket/polymarket-go-sdk/pkg/gamma"
 
 	"github.com/GoPolymarket/polymarket-trader/internal/config"
+	"github.com/GoPolymarket/polymarket-trader/internal/execution"
 	"github.com/GoPolymarket/polymarket-trader/internal/feed"
 	"github.com/GoPolymarket/polymarket-trader/internal/risk"
 	"github.com/GoPolymarket/polymarket-trader/internal/strategy"
@@ -21,34 +24,54 @@ type App struct {
 	clobClient clob.Client
 	wsClient   ws.Client
 	signer     auth.Signer
+	gammaClient gamma.Client
+	dataClient  data.Client
 
 	books   *feed.BookSnapshot
 	riskMgr *risk.Manager
 	maker   *strategy.Maker
 	taker   *strategy.Taker
+	tracker *execution.Tracker
 
-	activeOrders map[string][]string
-	totalOrders  int
-	totalFills   int
+	activeOrders  map[string][]string
+	assetToMarket map[string]string // assetID -> market/condition ID
+
+	gammaSelector *strategy.GammaSelector
 }
 
-func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer auth.Signer) *App {
+func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer auth.Signer, gammaClient gamma.Client, dataClient data.Client) *App {
+	tracker := execution.NewTracker()
+	riskMgr := risk.New(risk.Config{
+		MaxOpenOrders:        cfg.Risk.MaxOpenOrders,
+		MaxDailyLossUSDC:     cfg.Risk.MaxDailyLossUSDC,
+		MaxPositionPerMarket: cfg.Risk.MaxPositionPerMarket,
+		StopLossPerMarket:    cfg.Risk.StopLossPerMarket,
+		MaxDrawdownPct:       cfg.Risk.MaxDrawdownPct,
+		RiskSyncInterval:     cfg.Risk.RiskSyncInterval,
+	})
+
+	tracker.OnFill = func(f execution.Fill) {
+		riskMgr.RecordPnL(0) // Position change recorded; PnL realized via tracker
+		log.Printf("fill: %s %s %s price=%.4f size=%.2f", f.Side, f.AssetID, f.TradeID, f.Price, f.Size)
+	}
+
 	return &App{
-		cfg:        cfg,
-		clobClient: clobClient,
-		wsClient:   wsClient,
-		signer:     signer,
-		books:      feed.NewBookSnapshot(),
-		riskMgr: risk.New(risk.Config{
-			MaxOpenOrders:        cfg.Risk.MaxOpenOrders,
-			MaxDailyLossUSDC:     cfg.Risk.MaxDailyLossUSDC,
-			MaxPositionPerMarket: cfg.Risk.MaxPositionPerMarket,
-		}),
+		cfg:         cfg,
+		clobClient:  clobClient,
+		wsClient:    wsClient,
+		signer:      signer,
+		gammaClient: gammaClient,
+		dataClient:  dataClient,
+		books:       feed.NewBookSnapshot(),
+		riskMgr:     riskMgr,
 		maker: strategy.NewMaker(strategy.MakerConfig{
-			MinSpreadBps:       cfg.Maker.MinSpreadBps,
-			SpreadMultiplier:   cfg.Maker.SpreadMultiplier,
-			OrderSizeUSDC:      cfg.Maker.OrderSizeUSDC,
-			MaxOrdersPerMarket: cfg.Maker.MaxOrdersPerMarket,
+			MinSpreadBps:         cfg.Maker.MinSpreadBps,
+			SpreadMultiplier:     cfg.Maker.SpreadMultiplier,
+			OrderSizeUSDC:        cfg.Maker.OrderSizeUSDC,
+			MaxOrdersPerMarket:   cfg.Maker.MaxOrdersPerMarket,
+			InventorySkewBps:     cfg.Maker.InventorySkewBps,
+			InventoryWidenFactor: cfg.Maker.InventoryWidenFactor,
+			MinOrderSizeUSDC:     cfg.Maker.MinOrderSizeUSDC,
 		}),
 		taker: strategy.NewTaker(strategy.TakerConfig{
 			MinImbalance:   cfg.Taker.MinImbalance,
@@ -57,7 +80,16 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 			MaxSlippageBps: cfg.Taker.MaxSlippageBps,
 			Cooldown:       cfg.Taker.Cooldown,
 		}),
-		activeOrders: make(map[string][]string),
+		tracker:       tracker,
+		activeOrders:  make(map[string][]string),
+		assetToMarket: make(map[string]string),
+		gammaSelector: strategy.NewGammaSelector(gammaClient, strategy.SelectorConfig{
+			RescanInterval: cfg.Selector.RescanInterval,
+			MinLiquidity:   cfg.Selector.MinLiquidity,
+			MinVolume24hr:  cfg.Selector.MinVolume24hr,
+			MaxSpread:      cfg.Selector.MaxSpread,
+			MinDaysToEnd:   cfg.Selector.MinDaysToEnd,
+		}),
 	}
 }
 
@@ -81,7 +113,30 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 
+	// Subscribe to user order and trade streams for fill tracking.
+	marketIDs := a.collectMarketIDs(assetIDs)
+	var orderCh <-chan ws.OrderEvent
+	var tradeCh <-chan ws.TradeEvent
+	if len(marketIDs) > 0 {
+		orderCh, err = a.wsClient.SubscribeUserOrders(ctx, marketIDs)
+		if err != nil {
+			log.Printf("warning: user orders subscription failed: %v", err)
+		}
+		tradeCh, err = a.wsClient.SubscribeUserTrades(ctx, marketIDs)
+		if err != nil {
+			log.Printf("warning: user trades subscription failed: %v", err)
+		}
+	}
+
 	log.Println("trading loop started")
+
+	// Periodic risk sync ticker.
+	riskInterval := a.cfg.Risk.RiskSyncInterval
+	if riskInterval <= 0 {
+		riskInterval = 5 * time.Second
+	}
+	riskTicker := time.NewTicker(riskInterval)
+	defer riskTicker.Stop()
 
 	for {
 		select {
@@ -98,6 +153,21 @@ func (a *App) Run(ctx context.Context) error {
 				continue
 			}
 			a.HandleBookEvent(ctx, event)
+		case orderEv, ok := <-orderCh:
+			if !ok {
+				orderCh = nil
+				continue
+			}
+			a.tracker.ProcessOrderEvent(orderEv)
+			a.riskMgr.SetOpenOrders(a.tracker.OpenOrderCount())
+		case tradeEv, ok := <-tradeCh:
+			if !ok {
+				tradeCh = nil
+				continue
+			}
+			a.tracker.ProcessTradeEvent(tradeEv)
+		case <-riskTicker.C:
+			a.riskSync(ctx)
 		}
 	}
 }
@@ -106,7 +176,16 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 	a.books.Update(event)
 
 	if a.cfg.Maker.Enabled {
-		quote, err := a.maker.ComputeQuote(event)
+		// Build inventory state from tracker.
+		var inv strategy.InventoryState
+		if pos := a.tracker.Position(event.AssetID); pos != nil {
+			inv = strategy.InventoryState{
+				NetPosition:   pos.NetSize,
+				MaxPosition:   a.cfg.Risk.MaxPositionPerMarket,
+				AvgEntryPrice: pos.AvgEntryPrice,
+			}
+		}
+		quote, err := a.maker.ComputeQuote(event, inv)
 		if err != nil {
 			return
 		}
@@ -122,12 +201,12 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 			buyResp := a.placeLimit(ctx, event.AssetID, "BUY", quote.BuyPrice, quote.Size)
 			if buyResp.ID != "" {
 				a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], buyResp.ID)
-				a.totalOrders++
+				a.tracker.RegisterOrder(buyResp.ID, event.AssetID, event.Market, "BUY", quote.BuyPrice, quote.Size)
 			}
 			sellResp := a.placeLimit(ctx, event.AssetID, "SELL", quote.SellPrice, quote.Size)
 			if sellResp.ID != "" {
 				a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], sellResp.ID)
-				a.totalOrders++
+				a.tracker.RegisterOrder(sellResp.ID, event.AssetID, event.Market, "SELL", quote.SellPrice, quote.Size)
 			}
 		} else {
 			log.Printf("[DRY] maker %s: buy=%.4f sell=%.4f size=%.2f",
@@ -147,7 +226,7 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 			resp := a.placeMarket(ctx, sig.AssetID, sig.Side, sig.AmountUSDC)
 			if resp.ID != "" {
 				a.taker.RecordTrade(sig.AssetID)
-				a.totalFills++
+				a.tracker.RegisterOrder(resp.ID, sig.AssetID, event.Market, sig.Side, sig.MaxPrice, sig.AmountUSDC)
 			}
 		} else {
 			log.Printf("[DRY] taker %s: side=%s amount=%.2f imbalance=%.4f",
@@ -170,11 +249,14 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.wsClient != nil {
 		_ = a.wsClient.Close()
 	}
-	log.Printf("session complete: orders=%d fills=%d pnl=%.2f", a.totalOrders, a.totalFills, a.riskMgr.DailyPnL())
+	orders := a.tracker.OpenOrderCount()
+	fills := a.tracker.TotalFills()
+	pnl := a.tracker.TotalRealizedPnL()
+	log.Printf("session complete: orders=%d fills=%d pnl=%.2f", orders, fills, pnl)
 }
 
 func (a *App) Stats() (orders int, fills int, pnl float64) {
-	return a.totalOrders, a.totalFills, a.riskMgr.DailyPnL()
+	return a.tracker.OpenOrderCount(), a.tracker.TotalFills(), a.tracker.TotalRealizedPnL()
 }
 
 func (a *App) autoSelectMarkets(ctx context.Context) ([]string, error) {
@@ -190,9 +272,82 @@ func (a *App) autoSelectMarkets(ctx context.Context) ([]string, error) {
 				continue
 			}
 			booksMap[tok.TokenID] = clobtypes.OrderBook(book)
+			a.assetToMarket[tok.TokenID] = m.ConditionID
 		}
 	}
 	return strategy.SelectMarkets(resp.Data, booksMap, a.cfg.Maker.AutoSelectTop, 50), nil
+}
+
+// collectMarketIDs returns unique market/condition IDs for the given asset IDs.
+func (a *App) collectMarketIDs(assetIDs []string) []string {
+	seen := make(map[string]bool)
+	var marketIDs []string
+	for _, aid := range assetIDs {
+		if mid, ok := a.assetToMarket[aid]; ok && !seen[mid] {
+			seen[mid] = true
+			marketIDs = append(marketIDs, mid)
+		}
+	}
+	return marketIDs
+}
+
+// riskSync periodically syncs risk state from tracker and checks stop-loss.
+func (a *App) riskSync(ctx context.Context) {
+	positions := a.tracker.Positions()
+	a.riskMgr.SyncFromTracker(a.tracker.OpenOrderCount(), positions, a.tracker.TotalRealizedPnL())
+
+	// Per-market stop-loss checks.
+	for assetID, pos := range positions {
+		if pos.NetSize == 0 {
+			continue
+		}
+		mid, err := a.books.Mid(assetID)
+		if err != nil {
+			continue
+		}
+		if a.riskMgr.EvaluateStopLoss(assetID, pos, mid) {
+			log.Printf("STOP-LOSS triggered for %s: unwinding position", assetID)
+			a.unwindPosition(ctx, assetID, pos)
+		}
+	}
+
+	// Global drawdown check.
+	var totalUnrealized float64
+	for assetID, pos := range positions {
+		if pos.NetSize == 0 {
+			continue
+		}
+		mid, err := a.books.Mid(assetID)
+		if err != nil {
+			continue
+		}
+		totalUnrealized += (mid - pos.AvgEntryPrice) * pos.NetSize
+	}
+	if a.riskMgr.EvaluateDrawdown(a.tracker.TotalRealizedPnL(), totalUnrealized, a.cfg.Risk.MaxPositionPerMarket*5) {
+		log.Println("EMERGENCY: max drawdown exceeded, triggering emergency stop")
+		a.riskMgr.SetEmergencyStop(true)
+	}
+}
+
+// unwindPosition cancels all orders for an asset and places a market order to close.
+func (a *App) unwindPosition(ctx context.Context, assetID string, pos execution.Position) {
+	// Cancel all open orders for this asset.
+	if ids, has := a.activeOrders[assetID]; has && len(ids) > 0 {
+		_, _ = a.clobClient.CancelOrders(ctx, &clobtypes.CancelOrdersRequest{OrderIDs: ids})
+		delete(a.activeOrders, assetID)
+	}
+
+	if a.cfg.DryRun {
+		log.Printf("[DRY] would unwind %s: size=%.4f", assetID, pos.NetSize)
+		return
+	}
+
+	// Close the position.
+	if pos.NetSize > 0 {
+		a.placeMarket(ctx, assetID, "SELL", pos.NetSize*pos.AvgEntryPrice)
+	} else if pos.NetSize < 0 {
+		a.placeMarket(ctx, assetID, "BUY", -pos.NetSize*pos.AvgEntryPrice)
+	}
 }
 
 func (a *App) placeLimit(ctx context.Context, tokenID, side string, price, sizeUSDC float64) clobtypes.OrderResponse {

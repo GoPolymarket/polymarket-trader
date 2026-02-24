@@ -3,12 +3,18 @@ package risk
 import (
 	"fmt"
 	"sync"
+	"time"
+
+	"github.com/GoPolymarket/polymarket-trader/internal/execution"
 )
 
 type Config struct {
 	MaxOpenOrders        int
 	MaxDailyLossUSDC     float64
 	MaxPositionPerMarket float64
+	StopLossPerMarket    float64 // max loss per market before unwind
+	MaxDrawdownPct       float64 // max total drawdown as fraction of daily start
+	RiskSyncInterval     time.Duration
 }
 
 type Manager struct {
@@ -18,6 +24,7 @@ type Manager struct {
 	dailyPnL      float64
 	positions     map[string]float64 // tokenID → USDC exposure
 	emergencyStop bool
+	dailyStartPnL float64            // PnL at start of day for drawdown calc
 }
 
 func New(cfg Config) *Manager {
@@ -80,6 +87,12 @@ func (m *Manager) SetEmergencyStop(stop bool) {
 	m.emergencyStop = stop
 }
 
+func (m *Manager) EmergencyStop() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.emergencyStop
+}
+
 func (m *Manager) DailyPnL() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -89,5 +102,51 @@ func (m *Manager) DailyPnL() float64 {
 func (m *Manager) ResetDaily() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.dailyStartPnL = m.dailyPnL
 	m.dailyPnL = 0
+}
+
+// SyncFromTracker updates risk state from the execution tracker.
+func (m *Manager) SyncFromTracker(openOrders int, positions map[string]execution.Position, realizedPnL float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.openOrders = openOrders
+	m.dailyPnL = realizedPnL
+
+	// Rebuild position exposure from tracker positions.
+	m.positions = make(map[string]float64, len(positions))
+	for assetID, pos := range positions {
+		exposure := pos.AvgEntryPrice * abs(pos.NetSize)
+		if exposure > 0 {
+			m.positions[assetID] = exposure
+		}
+	}
+}
+
+// EvaluateStopLoss checks if a position's unrealized loss exceeds the per-market stop-loss.
+func (m *Manager) EvaluateStopLoss(assetID string, pos execution.Position, currentMid float64) bool {
+	if m.cfg.StopLossPerMarket <= 0 {
+		return false
+	}
+	unrealized := (currentMid - pos.AvgEntryPrice) * pos.NetSize
+	totalPnL := pos.RealizedPnL + unrealized
+	return totalPnL <= -m.cfg.StopLossPerMarket
+}
+
+// EvaluateDrawdown checks if total drawdown exceeds the max allowed percentage.
+// Capital is the starting capital for calculating the percentage.
+func (m *Manager) EvaluateDrawdown(realizedPnL, unrealizedPnL, capital float64) bool {
+	if m.cfg.MaxDrawdownPct <= 0 || capital <= 0 {
+		return false
+	}
+	totalPnL := realizedPnL + unrealizedPnL
+	drawdownPct := -totalPnL / capital
+	return drawdownPct >= m.cfg.MaxDrawdownPct
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

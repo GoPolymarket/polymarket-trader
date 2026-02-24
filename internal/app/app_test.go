@@ -21,12 +21,15 @@ func testConfig() config.Config {
 
 func TestNewApp(t *testing.T) {
 	cfg := testConfig()
-	a := New(cfg, nil, nil, nil)
+	a := New(cfg, nil, nil, nil, nil, nil)
 	if a == nil {
 		t.Fatal("expected non-nil app")
 	}
 	if a.activeOrders == nil {
 		t.Fatal("expected initialized activeOrders map")
+	}
+	if a.tracker == nil {
+		t.Fatal("expected initialized tracker")
 	}
 }
 
@@ -35,7 +38,7 @@ func TestHandleBookEventDryRunMaker(t *testing.T) {
 	cfg.Maker.Enabled = true
 	cfg.Taker.Enabled = false
 
-	a := New(cfg, nil, nil, nil)
+	a := New(cfg, nil, nil, nil, nil, nil)
 
 	event := ws.OrderbookEvent{
 		AssetID: "asset-1",
@@ -68,7 +71,7 @@ func TestHandleBookEventDryRunTaker(t *testing.T) {
 	cfg.Taker.Enabled = true
 	cfg.Taker.MinImbalance = 0.10
 
-	a := New(cfg, nil, nil, nil)
+	a := New(cfg, nil, nil, nil, nil, nil)
 
 	event := ws.OrderbookEvent{
 		AssetID: "asset-1",
@@ -86,7 +89,7 @@ func TestHandleBookEventDryRunTaker(t *testing.T) {
 
 func TestHandleBookEventEmptyBook(t *testing.T) {
 	cfg := testConfig()
-	a := New(cfg, nil, nil, nil)
+	a := New(cfg, nil, nil, nil, nil, nil)
 
 	event := ws.OrderbookEvent{AssetID: "asset-1"}
 	a.HandleBookEvent(context.Background(), event)
@@ -99,7 +102,7 @@ func TestHandleBookEventEmptyBook(t *testing.T) {
 
 func TestStats(t *testing.T) {
 	cfg := testConfig()
-	a := New(cfg, nil, nil, nil)
+	a := New(cfg, nil, nil, nil, nil, nil)
 
 	orders, fills, pnl := a.Stats()
 	if orders != 0 || fills != 0 || pnl != 0 {
@@ -110,7 +113,7 @@ func TestStats(t *testing.T) {
 func TestShutdownDryRun(t *testing.T) {
 	cfg := testConfig()
 	cfg.DryRun = true
-	a := New(cfg, nil, nil, nil)
+	a := New(cfg, nil, nil, nil, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -122,7 +125,7 @@ func TestHandleBookEventMultipleUpdates(t *testing.T) {
 	cfg.Maker.Enabled = true
 	cfg.Taker.Enabled = false
 
-	a := New(cfg, nil, nil, nil)
+	a := New(cfg, nil, nil, nil, nil, nil)
 
 	for i := 0; i < 5; i++ {
 		event := ws.OrderbookEvent{
