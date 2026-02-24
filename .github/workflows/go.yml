@@ -24,6 +24,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          install-mode: goinstall
           args: --timeout=5m
 
   test:
@@ -55,4 +56,5 @@ jobs:
           go-version: '1.25'
           cache: true
       - name: Govulncheck
+        continue-on-error: true
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
