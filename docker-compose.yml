@@ -1,0 +1,7 @@
+services:
+  trader:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config.yaml:/config.yaml:ro
