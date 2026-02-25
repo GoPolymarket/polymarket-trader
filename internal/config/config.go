@@ -17,14 +17,28 @@ type Config struct {
 	BuilderSecret     string `yaml:"builder_secret"`
 	BuilderPassphrase string `yaml:"builder_passphrase"`
 
-	ScanInterval time.Duration `yaml:"scan_interval"`
-	DryRun       bool          `yaml:"dry_run"`
-	LogLevel     string        `yaml:"log_level"`
+	ScanInterval      time.Duration `yaml:"scan_interval"`
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
+	DryRun            bool          `yaml:"dry_run"`
+	LogLevel          string        `yaml:"log_level"`
 
 	Maker    MakerConfig    `yaml:"maker"`
 	Taker    TakerConfig    `yaml:"taker"`
 	Risk     RiskConfig     `yaml:"risk"`
 	Selector SelectorConfig `yaml:"selector"`
+	Telegram TelegramConfig `yaml:"telegram"`
+	API      APIConfig      `yaml:"api"`
+}
+
+type TelegramConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	BotToken string `yaml:"bot_token"`
+	ChatID   string `yaml:"chat_id"`
+}
+
+type APIConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Addr    string `yaml:"addr"`
 }
 
 type MakerConfig struct {
@@ -80,9 +94,10 @@ type RiskConfig struct {
 
 func Default() Config {
 	return Config{
-		ScanInterval: 10 * time.Second,
-		DryRun:       true,
-		LogLevel:     "info",
+		ScanInterval:      10 * time.Second,
+		HeartbeatInterval: 30 * time.Second,
+		DryRun:            true,
+		LogLevel:          "info",
 		Maker: MakerConfig{
 			Enabled:              true,
 			AutoSelectTop:        2,
@@ -124,6 +139,9 @@ func Default() Config {
 			MinVolume24hr:  500,
 			MaxSpread:      0.10,
 			MinDaysToEnd:   2,
+		},
+		API: APIConfig{
+			Addr: ":8080",
 		},
 	}
 }

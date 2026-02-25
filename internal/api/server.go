@@ -1,0 +1,249 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/GoPolymarket/polymarket-trader/internal/execution"
+)
+
+// AppState exposes the trading app's state for the API layer.
+type AppState interface {
+	Stats() (orders int, fills int, pnl float64)
+	IsRunning() bool
+	IsDryRun() bool
+	MonitoredAssets() []string
+	SetEmergencyStop(stop bool)
+	RecentFills(limit int) []execution.Fill
+	ActiveOrders() []execution.OrderState
+	TrackedPositions() map[string]execution.Position
+	UnrealizedPnL() float64
+}
+
+// PortfolioProvider exposes portfolio data (nil if unavailable).
+type PortfolioProvider interface {
+	TotalValue() float64
+	LastSync() time.Time
+}
+
+// BuilderProvider exposes builder volume data (nil if unavailable).
+type BuilderProvider interface {
+	DailyVolumeJSON() interface{}
+	LeaderboardJSON() interface{}
+	LastSync() time.Time
+}
+
+// Server is a lightweight HTTP API for the trading dashboard.
+type Server struct {
+	httpServer *http.Server
+	appState   AppState
+	portfolio  PortfolioProvider
+	builder    BuilderProvider
+	startedAt  time.Time
+}
+
+// NewServer creates a new API server bound to addr.
+func NewServer(addr string, appState AppState, portfolio PortfolioProvider, builder BuilderProvider) *Server {
+	s := &Server{
+		appState:  appState,
+		portfolio: portfolio,
+		builder:   builder,
+		startedAt: time.Now(),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/positions", s.handlePositions)
+	mux.HandleFunc("/api/pnl", s.handlePnL)
+	mux.HandleFunc("/api/trades", s.handleTrades)
+	mux.HandleFunc("/api/orders", s.handleOrders)
+	mux.HandleFunc("/api/markets", s.handleMarkets)
+	mux.HandleFunc("/api/builder", s.handleBuilder)
+	mux.HandleFunc("/api/emergency-stop", s.handleEmergencyStop)
+
+	s.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	return s
+}
+
+// Start begins serving HTTP requests.
+func (s *Server) Start(_ context.Context) error {
+	ln, err := net.Listen("tcp", s.httpServer.Addr)
+	if err != nil {
+		return err
+	}
+	log.Printf("api server listening on %s", s.httpServer.Addr)
+	go func() {
+		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("api server: %v", err)
+		}
+	}()
+	return nil
+}
+
+// Shutdown gracefully stops the server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) writeJSON(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+// GET /api/status — overall system status.
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	orders, fills, pnl := s.appState.Stats()
+	resp := map[string]interface{}{
+		"running":  s.appState.IsRunning(),
+		"dry_run":  s.appState.IsDryRun(),
+		"uptime_s": time.Since(s.startedAt).Seconds(),
+		"orders":   orders,
+		"fills":    fills,
+		"pnl":      pnl,
+		"assets":   s.appState.MonitoredAssets(),
+	}
+	if s.portfolio != nil {
+		resp["portfolio_value"] = s.portfolio.TotalValue()
+		resp["portfolio_sync"] = s.portfolio.LastSync()
+	}
+	s.writeJSON(w, resp)
+}
+
+// GET /api/positions — current tracked positions.
+func (s *Server) handlePositions(w http.ResponseWriter, _ *http.Request) {
+	positions := s.appState.TrackedPositions()
+	type positionEntry struct {
+		AssetID       string  `json:"asset_id"`
+		NetSize       float64 `json:"net_size"`
+		AvgEntryPrice float64 `json:"avg_entry_price"`
+		RealizedPnL   float64 `json:"realized_pnl"`
+		TotalFills    int     `json:"total_fills"`
+	}
+	var entries []positionEntry
+	for id, p := range positions {
+		if p.NetSize == 0 && p.RealizedPnL == 0 {
+			continue
+		}
+		entries = append(entries, positionEntry{
+			AssetID:       id,
+			NetSize:       p.NetSize,
+			AvgEntryPrice: p.AvgEntryPrice,
+			RealizedPnL:   p.RealizedPnL,
+			TotalFills:    p.TotalFills,
+		})
+	}
+	s.writeJSON(w, map[string]interface{}{"positions": entries})
+}
+
+// GET /api/pnl — realized + unrealized PnL.
+func (s *Server) handlePnL(w http.ResponseWriter, _ *http.Request) {
+	_, _, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	resp := map[string]interface{}{
+		"realized_pnl":   realized,
+		"unrealized_pnl": unrealized,
+		"total_pnl":      realized + unrealized,
+	}
+	if s.portfolio != nil {
+		resp["portfolio_value"] = s.portfolio.TotalValue()
+	}
+	s.writeJSON(w, resp)
+}
+
+// GET /api/trades?limit=50 — recent trade fills.
+func (s *Server) handleTrades(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	fills := s.appState.RecentFills(limit)
+	type tradeEntry struct {
+		TradeID   string    `json:"trade_id"`
+		AssetID   string    `json:"asset_id"`
+		Side      string    `json:"side"`
+		Price     float64   `json:"price"`
+		Size      float64   `json:"size"`
+		Timestamp time.Time `json:"timestamp"`
+	}
+	entries := make([]tradeEntry, len(fills))
+	for i, f := range fills {
+		entries[i] = tradeEntry{
+			TradeID:   f.TradeID,
+			AssetID:   f.AssetID,
+			Side:      f.Side,
+			Price:     f.Price,
+			Size:      f.Size,
+			Timestamp: f.Timestamp,
+		}
+	}
+	s.writeJSON(w, map[string]interface{}{"trades": entries, "count": len(entries)})
+}
+
+// GET /api/orders — active (LIVE) orders.
+func (s *Server) handleOrders(w http.ResponseWriter, _ *http.Request) {
+	orders := s.appState.ActiveOrders()
+	type orderEntry struct {
+		ID         string    `json:"id"`
+		AssetID    string    `json:"asset_id"`
+		Market     string    `json:"market"`
+		Side       string    `json:"side"`
+		Price      float64   `json:"price"`
+		OrigSize   float64   `json:"orig_size"`
+		FilledSize float64   `json:"filled_size"`
+		CreatedAt  time.Time `json:"created_at"`
+	}
+	entries := make([]orderEntry, len(orders))
+	for i, o := range orders {
+		entries[i] = orderEntry{
+			ID:         o.ID,
+			AssetID:    o.AssetID,
+			Market:     o.Market,
+			Side:       o.Side,
+			Price:      o.Price,
+			OrigSize:   o.OrigSize,
+			FilledSize: o.FilledSize,
+			CreatedAt:  o.CreatedAt,
+		}
+	}
+	s.writeJSON(w, map[string]interface{}{"orders": entries, "count": len(entries)})
+}
+
+// GET /api/markets — monitored markets.
+func (s *Server) handleMarkets(w http.ResponseWriter, _ *http.Request) {
+	assets := s.appState.MonitoredAssets()
+	s.writeJSON(w, map[string]interface{}{"assets": assets, "count": len(assets)})
+}
+
+// GET /api/builder — builder volume and leaderboard data.
+func (s *Server) handleBuilder(w http.ResponseWriter, _ *http.Request) {
+	if s.builder == nil {
+		s.writeJSON(w, map[string]string{"status": "not_configured"})
+		return
+	}
+	s.writeJSON(w, map[string]interface{}{
+		"daily_volume": s.builder.DailyVolumeJSON(),
+		"leaderboard":  s.builder.LeaderboardJSON(),
+		"last_sync":    s.builder.LastSync(),
+	})
+}
+
+// POST /api/emergency-stop — trigger emergency stop.
+func (s *Server) handleEmergencyStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.appState.SetEmergencyStop(true)
+	s.writeJSON(w, map[string]string{"status": "emergency_stop_activated"})
+}

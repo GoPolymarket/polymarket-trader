@@ -254,3 +254,31 @@ func (t *Tracker) OrderIDs(assetID, status string) []string {
 	}
 	return ids
 }
+
+// RecentFills returns the last N fills (most recent first).
+func (t *Tracker) RecentFills(limit int) []Fill {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	n := len(t.fills)
+	if limit <= 0 || limit > n {
+		limit = n
+	}
+	out := make([]Fill, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = t.fills[n-1-i]
+	}
+	return out
+}
+
+// ActiveOrders returns a snapshot of all LIVE orders.
+func (t *Tracker) ActiveOrders() []OrderState {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	var out []OrderState
+	for _, o := range t.orders {
+		if o.Status == "LIVE" {
+			out = append(out, *o)
+		}
+	}
+	return out
+}
