@@ -194,6 +194,7 @@ If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/status`
 - `GET /api/pnl`
 - `GET /api/perf` (performance KPIs: total PnL, PnL/fill, fees, net after fees)
+- `GET /api/coach` (actionable "make more, lose less" guidance: risk mode, size multiplier, and prioritized actions)
 - `GET /api/grant-report` (single payload aggregating builder + risk + performance + readiness scorecard; add `?format=csv` for export)
 - `GET /api/builder` (builder daily volume/leaderboard with counts, sync age, and health flags `never_synced`/`stale`)
 - `GET /api/risk` (daily cap usage/headroom + `can_trade` and machine-readable `blocked_reasons`)

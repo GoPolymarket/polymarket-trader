@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"reflect"
@@ -74,6 +75,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/positions", s.handlePositions)
 	mux.HandleFunc("/api/pnl", s.handlePnL)
 	mux.HandleFunc("/api/perf", s.handlePerf)
+	mux.HandleFunc("/api/coach", s.handleCoach)
 	mux.HandleFunc("/api/grant-report", s.handleGrantReport)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
@@ -299,34 +301,8 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snap := s.appState.RiskSnapshot()
-	usagePct := 0.0
-	remainingUSDC := 0.0
-	remainingPct := 0.0
-	blockedReasons := make([]string, 0, 3)
-	if snap.EmergencyStop {
-		blockedReasons = append(blockedReasons, "emergency_stop")
-	}
-	if snap.DailyLossLimitUSDC > 0 {
-		usagePct = (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
-		if usagePct < 0 {
-			usagePct = 0
-		}
-		remainingUSDC = snap.DailyLossLimitUSDC + snap.DailyPnL
-		if remainingUSDC < 0 {
-			remainingUSDC = 0
-		}
-		remainingPct = 100 - usagePct
-		if remainingPct < 0 {
-			remainingPct = 0
-		}
-		if snap.DailyPnL <= -snap.DailyLossLimitUSDC {
-			blockedReasons = append(blockedReasons, "daily_loss_limit_reached")
-		}
-	}
-	if snap.InCooldown {
-		blockedReasons = append(blockedReasons, "loss_cooldown_active")
-	}
-	canTrade := len(blockedReasons) == 0
+	rs := buildRiskStatus(snap)
+	canTrade := rs.canTrade
 	builderFresh := builderConfigured && !builderNeverSynced && !builderStale
 	hasTradingActivity := fills > 0
 	readinessScore := 0
@@ -341,7 +317,7 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "csv") {
-		s.writeGrantReportCSV(w, generatedAt, mode, fills, realized, unrealized, total, fees, estimatedEquity, builderConfigured, builderDailyVolumeCount, builderLeaderboardCount, builderLastSyncAgeSeconds, builderNeverSynced, builderStale, canTrade, snap.DailyPnL, usagePct, snap.ConsecutiveLosses, snap.InCooldown, blockedReasons, builderFresh, hasTradingActivity, readinessScore)
+		s.writeGrantReportCSV(w, generatedAt, mode, fills, realized, unrealized, total, fees, estimatedEquity, builderConfigured, builderDailyVolumeCount, builderLeaderboardCount, builderLastSyncAgeSeconds, builderNeverSynced, builderStale, canTrade, snap.DailyPnL, rs.usagePct, snap.ConsecutiveLosses, snap.InCooldown, rs.blockedReasons, builderFresh, hasTradingActivity, readinessScore)
 		return
 	}
 
@@ -362,11 +338,11 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, r *http.Request) {
 			"emergency_stop":            snap.EmergencyStop,
 			"daily_pnl":                 snap.DailyPnL,
 			"daily_loss_limit_usdc":     snap.DailyLossLimitUSDC,
-			"daily_loss_used_pct":       usagePct,
-			"daily_loss_remaining_usdc": remainingUSDC,
-			"daily_loss_remaining_pct":  remainingPct,
+			"daily_loss_used_pct":       rs.usagePct,
+			"daily_loss_remaining_usdc": rs.remainingUSDC,
+			"daily_loss_remaining_pct":  rs.remainingPct,
 			"can_trade":                 canTrade,
-			"blocked_reasons":           blockedReasons,
+			"blocked_reasons":           rs.blockedReasons,
 			"consecutive_losses":        snap.ConsecutiveLosses,
 			"max_consecutive_losses":    snap.MaxConsecutiveLosses,
 			"in_cooldown":               snap.InCooldown,
@@ -616,49 +592,302 @@ func countEntries(v interface{}) int {
 	}
 }
 
-// GET /api/risk — current risk guardrail status.
-func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
-	snap := s.appState.RiskSnapshot()
-	usagePct := 0.0
-	remainingUSDC := 0.0
-	remainingPct := 0.0
-	blockedReasons := make([]string, 0, 3)
+type riskStatus struct {
+	usagePct       float64
+	remainingUSDC  float64
+	remainingPct   float64
+	blockedReasons []string
+	canTrade       bool
+}
+
+func buildRiskStatus(snap risk.Snapshot) riskStatus {
+	st := riskStatus{
+		usagePct:       0,
+		remainingUSDC:  0,
+		remainingPct:   0,
+		blockedReasons: make([]string, 0, 3),
+	}
 	if snap.EmergencyStop {
-		blockedReasons = append(blockedReasons, "emergency_stop")
+		st.blockedReasons = append(st.blockedReasons, "emergency_stop")
 	}
 	if snap.DailyLossLimitUSDC > 0 {
-		usagePct = (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
-		if usagePct < 0 {
-			usagePct = 0
+		st.usagePct = (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
+		if st.usagePct < 0 {
+			st.usagePct = 0
 		}
-		remainingUSDC = snap.DailyLossLimitUSDC + snap.DailyPnL
-		if remainingUSDC < 0 {
-			remainingUSDC = 0
+		st.remainingUSDC = snap.DailyLossLimitUSDC + snap.DailyPnL
+		if st.remainingUSDC < 0 {
+			st.remainingUSDC = 0
 		}
-		remainingPct = 100 - usagePct
-		if remainingPct < 0 {
-			remainingPct = 0
+		st.remainingPct = 100 - st.usagePct
+		if st.remainingPct < 0 {
+			st.remainingPct = 0
 		}
 		if snap.DailyPnL <= -snap.DailyLossLimitUSDC {
-			blockedReasons = append(blockedReasons, "daily_loss_limit_reached")
+			st.blockedReasons = append(st.blockedReasons, "daily_loss_limit_reached")
 		}
 	}
 	if snap.InCooldown {
-		blockedReasons = append(blockedReasons, "loss_cooldown_active")
+		st.blockedReasons = append(st.blockedReasons, "loss_cooldown_active")
 	}
+	st.canTrade = len(st.blockedReasons) == 0
+	return st
+}
+
+type coachAction struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+}
+
+type marketSnapshot struct {
+	assetID string
+	pnlUSDC float64
+}
+
+func round2(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+func averageFillNotional(fills []execution.Fill) float64 {
+	if len(fills) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, f := range fills {
+		total += f.Price * f.Size
+	}
+	return total / float64(len(fills))
+}
+
+func chooseSizingMode(canTrade bool, usagePct, totalPnL float64, consecutiveLosses, maxConsecutiveLosses int) (string, float64) {
+	if !canTrade {
+		return "pause", 0
+	}
+	nearLossStreak := maxConsecutiveLosses > 1 && consecutiveLosses >= maxConsecutiveLosses-1
+	if usagePct >= 80 || totalPnL < 0 || nearLossStreak {
+		return "defensive", 0.5
+	}
+	return "normal", 1.0
+}
+
+func buildCoachActions(
+	canTrade bool,
+	blockedReasons []string,
+	inCooldown bool,
+	cooldownRemaining time.Duration,
+	usagePct float64,
+	fills int,
+	pnlPerFill float64,
+	profitableMarkets int,
+	best marketSnapshot,
+) []coachAction {
+	actions := make([]coachAction, 0, 6)
+	if !canTrade {
+		actions = append(actions, coachAction{
+			Code:     "pause_trading",
+			Severity: "critical",
+			Message:  fmt.Sprintf("Trading blocked by risk rules: %s", strings.Join(blockedReasons, ",")),
+		})
+	}
+	if inCooldown {
+		actions = append(actions, coachAction{
+			Code:     "wait_cooldown",
+			Severity: "warn",
+			Message:  fmt.Sprintf("Wait %.0fs before resuming new risk.", cooldownRemaining.Seconds()),
+		})
+	}
+	if usagePct >= 80 {
+		actions = append(actions, coachAction{
+			Code:     "reduce_size",
+			Severity: "warn",
+			Message:  "Daily loss budget usage is high; cut per-order size by 50%.",
+		})
+	}
+	if fills < 20 {
+		actions = append(actions, coachAction{
+			Code:     "increase_sample_size",
+			Severity: "info",
+			Message:  "Collect at least 20 fills before increasing size.",
+		})
+	}
+	if fills >= 10 && pnlPerFill <= 0 {
+		actions = append(actions, coachAction{
+			Code:     "fix_edge_before_scaling",
+			Severity: "warn",
+			Message:  "Current PnL per fill is non-positive; improve edge before scaling.",
+		})
+	}
+	if profitableMarkets > 0 && best.assetID != "" {
+		actions = append(actions, coachAction{
+			Code:     "focus_profitable_markets",
+			Severity: "info",
+			Message:  fmt.Sprintf("Allocate attention to %s where realized PnL is strongest.", best.assetID),
+		})
+	}
+	if len(actions) == 0 {
+		actions = append(actions, coachAction{
+			Code:     "maintain_plan",
+			Severity: "info",
+			Message:  "Risk and performance are healthy; keep current sizing discipline.",
+		})
+	}
+	return actions
+}
+
+// GET /api/risk — current risk guardrail status.
+func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
 	s.writeJSON(w, map[string]interface{}{
 		"emergency_stop":            snap.EmergencyStop,
 		"daily_pnl":                 snap.DailyPnL,
 		"daily_loss_limit_usdc":     snap.DailyLossLimitUSDC,
-		"daily_loss_used_pct":       usagePct,
-		"daily_loss_remaining_usdc": remainingUSDC,
-		"daily_loss_remaining_pct":  remainingPct,
-		"can_trade":                 len(blockedReasons) == 0,
-		"blocked_reasons":           blockedReasons,
+		"daily_loss_used_pct":       rs.usagePct,
+		"daily_loss_remaining_usdc": rs.remainingUSDC,
+		"daily_loss_remaining_pct":  rs.remainingPct,
+		"can_trade":                 rs.canTrade,
+		"blocked_reasons":           rs.blockedReasons,
 		"consecutive_losses":        snap.ConsecutiveLosses,
 		"max_consecutive_losses":    snap.MaxConsecutiveLosses,
 		"in_cooldown":               snap.InCooldown,
 		"cooldown_remaining_s":      snap.CooldownRemaining.Seconds(),
+	})
+}
+
+// GET /api/coach — actionable coaching for sizing and capital protection.
+func (s *Server) handleCoach(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	pnlPerFill := 0.0
+	if fills > 0 {
+		pnlPerFill = totalPnL / float64(fills)
+	}
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	positions := s.appState.TrackedPositions()
+
+	profitableMarkets := 0
+	losingMarkets := 0
+	grossProfit := 0.0
+	grossLoss := 0.0
+	trackedMarkets := 0
+	best := marketSnapshot{pnlUSDC: math.Inf(-1)}
+	worst := marketSnapshot{pnlUSDC: math.Inf(1)}
+
+	for assetID, pos := range positions {
+		if pos.NetSize == 0 && pos.RealizedPnL == 0 && pos.TotalFills == 0 {
+			continue
+		}
+		trackedMarkets++
+		pnl := pos.RealizedPnL
+		if pnl > 0 {
+			profitableMarkets++
+			grossProfit += pnl
+		}
+		if pnl < 0 {
+			losingMarkets++
+			grossLoss += -pnl
+		}
+		if pnl > best.pnlUSDC {
+			best = marketSnapshot{assetID: assetID, pnlUSDC: pnl}
+		}
+		if pnl < worst.pnlUSDC {
+			worst = marketSnapshot{assetID: assetID, pnlUSDC: pnl}
+		}
+	}
+
+	var profitFactor interface{}
+	if grossLoss > 0 {
+		profitFactor = grossProfit / grossLoss
+	}
+
+	riskMode, sizeMultiplier := chooseSizingMode(
+		rs.canTrade,
+		rs.usagePct,
+		totalPnL,
+		snap.ConsecutiveLosses,
+		snap.MaxConsecutiveLosses,
+	)
+
+	recentFills := s.appState.RecentFills(50)
+	baseOrderUSDC := averageFillNotional(recentFills)
+	if baseOrderUSDC <= 0 {
+		baseOrderUSDC = 5
+	}
+	if rs.remainingUSDC > 0 {
+		riskCap := rs.remainingUSDC * 0.10
+		if riskCap > 0 && riskCap < baseOrderUSDC {
+			baseOrderUSDC = riskCap
+		}
+	}
+	suggestedOrderUSDC := 0.0
+	if riskMode != "pause" {
+		suggestedOrderUSDC = baseOrderUSDC * sizeMultiplier
+	}
+
+	actions := buildCoachActions(
+		rs.canTrade,
+		rs.blockedReasons,
+		snap.InCooldown,
+		snap.CooldownRemaining,
+		rs.usagePct,
+		fills,
+		pnlPerFill,
+		profitableMarkets,
+		best,
+	)
+
+	var bestMarket interface{}
+	var worstMarket interface{}
+	if best.assetID != "" {
+		bestMarket = map[string]interface{}{
+			"asset_id":          best.assetID,
+			"realized_pnl_usdc": best.pnlUSDC,
+		}
+	}
+	if worst.assetID != "" {
+		worstMarket = map[string]interface{}{
+			"asset_id":          worst.assetID,
+			"realized_pnl_usdc": worst.pnlUSDC,
+		}
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":              generatedAt,
+		"trading_mode":              s.appState.TradingMode(),
+		"can_trade":                 rs.canTrade,
+		"blocked_reasons":           rs.blockedReasons,
+		"daily_loss_used_pct":       rs.usagePct,
+		"daily_loss_remaining_usdc": rs.remainingUSDC,
+		"consecutive_losses":        snap.ConsecutiveLosses,
+		"max_consecutive_losses":    snap.MaxConsecutiveLosses,
+		"cooldown_remaining_s":      snap.CooldownRemaining.Seconds(),
+		"fills":                     fills,
+		"realized_pnl_usdc":         realized,
+		"unrealized_pnl_usdc":       unrealized,
+		"total_pnl_usdc":            totalPnL,
+		"pnl_per_fill_usdc":         pnlPerFill,
+		"market_stats": map[string]interface{}{
+			"tracked_markets":    trackedMarkets,
+			"profitable_markets": profitableMarkets,
+			"losing_markets":     losingMarkets,
+			"gross_profit_usdc":  grossProfit,
+			"gross_loss_usdc":    grossLoss,
+			"profit_factor":      profitFactor,
+			"best_market":        bestMarket,
+			"worst_market":       worstMarket,
+		},
+		"sizing": map[string]interface{}{
+			"risk_mode":                riskMode,
+			"size_multiplier":          sizeMultiplier,
+			"base_order_usdc":          round2(baseOrderUSDC),
+			"suggested_max_order_usdc": round2(suggestedOrderUSDC),
+		},
+		"actions": actions,
 	})
 }
 

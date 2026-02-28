@@ -391,6 +391,195 @@ func TestHandleGrantReportCSV(t *testing.T) {
 	}
 }
 
+func TestHandleCoachNormal(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       30,
+		pnl:         12.0,
+		unrealPnL:   -2.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -1.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    0,
+			MaxConsecutiveLosses: 3,
+		},
+		positions: map[string]execution.Position{
+			"asset-win":  {AssetID: "asset-win", RealizedPnL: 4.0, TotalFills: 10},
+			"asset-loss": {AssetID: "asset-loss", RealizedPnL: -1.0, TotalFills: 6},
+		},
+		recentFills: []execution.Fill{
+			{AssetID: "asset-win", Side: "BUY", Price: 0.60, Size: 20},
+			{AssetID: "asset-loss", Side: "BUY", Price: 0.40, Size: 10},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/coach", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != true {
+		t.Fatalf("expected can_trade=true, got %v", resp["can_trade"])
+	}
+
+	marketStats, ok := resp["market_stats"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected market_stats object, got %T", resp["market_stats"])
+	}
+	if int(marketStats["profitable_markets"].(float64)) != 1 {
+		t.Fatalf("expected profitable_markets=1, got %v", marketStats["profitable_markets"])
+	}
+	if int(marketStats["losing_markets"].(float64)) != 1 {
+		t.Fatalf("expected losing_markets=1, got %v", marketStats["losing_markets"])
+	}
+
+	sizing, ok := resp["sizing"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected sizing object, got %T", resp["sizing"])
+	}
+	if sizing["risk_mode"] != "normal" {
+		t.Fatalf("expected sizing.risk_mode=normal, got %v", sizing["risk_mode"])
+	}
+	if sizing["size_multiplier"].(float64) != 1.0 {
+		t.Fatalf("expected sizing.size_multiplier=1.0, got %v", sizing["size_multiplier"])
+	}
+	if sizing["suggested_max_order_usdc"].(float64) <= 0 {
+		t.Fatalf("expected positive suggested_max_order_usdc, got %v", sizing["suggested_max_order_usdc"])
+	}
+
+	actions, ok := resp["actions"].([]interface{})
+	if !ok {
+		t.Fatalf("expected actions list, got %T", resp["actions"])
+	}
+	if !containsActionCode(actions, "focus_profitable_markets") {
+		t.Fatalf("expected focus_profitable_markets action, got %v", actions)
+	}
+}
+
+func TestHandleCoachDefensiveMode(t *testing.T) {
+	state := &mockAppState{
+		fills: 10,
+		pnl:   -2.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -18.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    1,
+			MaxConsecutiveLosses: 3,
+		},
+		recentFills: []execution.Fill{
+			{AssetID: "asset-1", Side: "BUY", Price: 0.50, Size: 10},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/coach", nil)
+	w := httptest.NewRecorder()
+	s.handleCoach(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	sizing, ok := resp["sizing"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected sizing object, got %T", resp["sizing"])
+	}
+	if sizing["risk_mode"] != "defensive" {
+		t.Fatalf("expected sizing.risk_mode=defensive, got %v", sizing["risk_mode"])
+	}
+	if sizing["size_multiplier"].(float64) != 0.5 {
+		t.Fatalf("expected sizing.size_multiplier=0.5, got %v", sizing["size_multiplier"])
+	}
+
+	actions, ok := resp["actions"].([]interface{})
+	if !ok {
+		t.Fatalf("expected actions list, got %T", resp["actions"])
+	}
+	if !containsActionCode(actions, "reduce_size") {
+		t.Fatalf("expected reduce_size action, got %v", actions)
+	}
+}
+
+func TestHandleCoachPausedByRisk(t *testing.T) {
+	state := &mockAppState{
+		fills: 5,
+		riskSnapshot: risk.Snapshot{
+			EmergencyStop:        true,
+			DailyPnL:             -25.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    3,
+			MaxConsecutiveLosses: 3,
+			InCooldown:           true,
+			CooldownRemaining:    5 * time.Minute,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/coach", nil)
+	w := httptest.NewRecorder()
+	s.handleCoach(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != false {
+		t.Fatalf("expected can_trade=false, got %v", resp["can_trade"])
+	}
+
+	sizing, ok := resp["sizing"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected sizing object, got %T", resp["sizing"])
+	}
+	if sizing["risk_mode"] != "pause" {
+		t.Fatalf("expected sizing.risk_mode=pause, got %v", sizing["risk_mode"])
+	}
+	if sizing["size_multiplier"].(float64) != 0.0 {
+		t.Fatalf("expected sizing.size_multiplier=0, got %v", sizing["size_multiplier"])
+	}
+	if sizing["suggested_max_order_usdc"].(float64) != 0.0 {
+		t.Fatalf("expected suggested_max_order_usdc=0, got %v", sizing["suggested_max_order_usdc"])
+	}
+
+	actions, ok := resp["actions"].([]interface{})
+	if !ok {
+		t.Fatalf("expected actions list, got %T", resp["actions"])
+	}
+	if !containsActionCode(actions, "pause_trading") {
+		t.Fatalf("expected pause_trading action, got %v", actions)
+	}
+}
+
+func containsActionCode(actions []interface{}, code string) bool {
+	for _, raw := range actions {
+		obj, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if obj["code"] == code {
+			return true
+		}
+	}
+	return false
+}
+
 func TestHandleTrades(t *testing.T) {
 	state := &mockAppState{
 		recentFills: []execution.Fill{
