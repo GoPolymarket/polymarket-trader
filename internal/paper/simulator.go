@@ -37,6 +37,7 @@ type Snapshot struct {
 	FeesPaidUSDC       float64 `json:"fees_paid_usdc"`
 	TotalVolumeUSDC    float64 `json:"total_volume_usdc"`
 	TotalTrades        int     `json:"total_trades"`
+	AllowShort         bool    `json:"allow_short"`
 }
 
 type Simulator struct {
@@ -84,6 +85,7 @@ func (s *Simulator) Snapshot() Snapshot {
 		FeesPaidUSDC:       s.feesPaidUSDC,
 		TotalVolumeUSDC:    s.totalVolumeUSDC,
 		TotalTrades:        s.totalTrades,
+		AllowShort:         s.allowShort,
 	}
 }
 

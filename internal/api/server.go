@@ -280,6 +280,7 @@ func (s *Server) handlePaper(w http.ResponseWriter, _ *http.Request) {
 		"fees_paid_usdc":       snap.FeesPaidUSDC,
 		"total_volume_usdc":    snap.TotalVolumeUSDC,
 		"total_trades":         snap.TotalTrades,
+		"allow_short":          snap.AllowShort,
 	})
 }
 

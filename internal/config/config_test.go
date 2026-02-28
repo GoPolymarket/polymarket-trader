@@ -161,6 +161,7 @@ func TestApplyEnvAllVars(t *testing.T) {
 	t.Setenv("BUILDER_SECRET", "builder-secret")
 	t.Setenv("BUILDER_PASSPHRASE", "builder-pass")
 	t.Setenv("TRADER_DRY_RUN", "1")
+	t.Setenv("TRADER_PAPER_ALLOW_SHORT", "false")
 
 	cfg := Default()
 	cfg.ApplyEnv()
@@ -189,6 +190,9 @@ func TestApplyEnvAllVars(t *testing.T) {
 	if !cfg.DryRun {
 		t.Fatal("expected DryRun true from env '1'")
 	}
+	if cfg.Paper.AllowShort {
+		t.Fatal("expected Paper.AllowShort false from env")
+	}
 }
 
 func TestApplyEnvDryRunTrue(t *testing.T) {
@@ -207,5 +211,15 @@ func TestApplyEnvTradingMode(t *testing.T) {
 	cfg.ApplyEnv()
 	if cfg.TradingMode != "live" {
 		t.Fatalf("expected trading mode from env to be live, got %q", cfg.TradingMode)
+	}
+}
+
+func TestApplyEnvPaperAllowShort(t *testing.T) {
+	t.Setenv("TRADER_PAPER_ALLOW_SHORT", "1")
+	cfg := Default()
+	cfg.Paper.AllowShort = false
+	cfg.ApplyEnv()
+	if !cfg.Paper.AllowShort {
+		t.Fatal("expected Paper.AllowShort true from env '1'")
 	}
 }

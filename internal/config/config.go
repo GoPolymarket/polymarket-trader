@@ -210,4 +210,7 @@ func (c *Config) ApplyEnv() {
 	if v := strings.TrimSpace(os.Getenv("TRADER_TRADING_MODE")); v != "" {
 		c.TradingMode = strings.ToLower(v)
 	}
+	if v := strings.TrimSpace(os.Getenv("TRADER_PAPER_ALLOW_SHORT")); v != "" {
+		c.Paper.AllowShort = strings.EqualFold(v, "true") || v == "1"
+	}
 }

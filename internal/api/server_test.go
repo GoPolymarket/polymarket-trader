@@ -298,6 +298,7 @@ func TestHandlePaper(t *testing.T) {
 			InitialBalanceUSDC: 1000,
 			BalanceUSDC:        995.5,
 			FeesPaidUSDC:       0.5,
+			AllowShort:         false,
 		},
 	}
 	s := NewServer(":0", state, nil, nil)
@@ -319,5 +320,8 @@ func TestHandlePaper(t *testing.T) {
 	}
 	if resp["initial_balance_usdc"].(float64) != 1000 {
 		t.Fatalf("expected initial balance 1000, got %v", resp["initial_balance_usdc"])
+	}
+	if resp["allow_short"].(bool) != false {
+		t.Fatalf("expected allow_short false, got %v", resp["allow_short"])
 	}
 }

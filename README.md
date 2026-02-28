@@ -156,6 +156,7 @@ All credentials are loaded from environment variables (see `.env.example`):
 | `BUILDER_PASSPHRASE` | Builder program passphrase |
 | `TRADER_DRY_RUN` | Override dry-run mode (`true`/`1`) |
 | `TRADER_TRADING_MODE` | Override mode (`paper`/`live`) |
+| `TRADER_PAPER_ALLOW_SHORT` | Override paper shorting (`true`/`1` enables synthetic shorting) |
 
 ## Trading Strategies
 
