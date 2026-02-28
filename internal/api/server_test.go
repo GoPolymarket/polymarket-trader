@@ -580,6 +580,149 @@ func containsActionCode(actions []interface{}, code string) bool {
 	return false
 }
 
+func TestHandleInsightsScores(t *testing.T) {
+	state := &mockAppState{
+		fills:     22,
+		pnl:       6.0,
+		unrealPnL: -1.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -3.0,
+			DailyLossLimitUSDC:   30.0,
+			ConsecutiveLosses:    1,
+			MaxConsecutiveLosses: 3,
+		},
+		positions: map[string]execution.Position{
+			"asset-alpha": {AssetID: "asset-alpha", RealizedPnL: 5.0, TotalFills: 10},
+			"asset-beta":  {AssetID: "asset-beta", RealizedPnL: -2.5, TotalFills: 8},
+			"asset-gamma": {AssetID: "asset-gamma", RealizedPnL: 0.5, TotalFills: 4},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/insights", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp["generated_at"] == nil {
+		t.Fatal("expected generated_at")
+	}
+	if resp["can_trade"] != true {
+		t.Fatalf("expected can_trade=true, got %v", resp["can_trade"])
+	}
+
+	scores, ok := resp["market_scores"].([]interface{})
+	if !ok {
+		t.Fatalf("expected market_scores list, got %T", resp["market_scores"])
+	}
+	if len(scores) != 3 {
+		t.Fatalf("expected 3 market scores, got %d", len(scores))
+	}
+
+	first := scores[0].(map[string]interface{})
+	if first["asset_id"] != "asset-alpha" {
+		t.Fatalf("expected top asset asset-alpha, got %v", first["asset_id"])
+	}
+	if first["bucket"] != "focus" {
+		t.Fatalf("expected top bucket focus, got %v", first["bucket"])
+	}
+	if first["score"].(float64) <= 0 {
+		t.Fatalf("expected positive score, got %v", first["score"])
+	}
+
+	recs, ok := resp["recommendations"].([]interface{})
+	if !ok {
+		t.Fatalf("expected recommendations list, got %T", resp["recommendations"])
+	}
+	if !containsActionCode(recs, "focus_top_market") {
+		t.Fatalf("expected focus_top_market recommendation, got %v", recs)
+	}
+	if !containsActionCode(recs, "deprioritize_worst_market") {
+		t.Fatalf("expected deprioritize_worst_market recommendation, got %v", recs)
+	}
+}
+
+func TestHandleInsightsNoData(t *testing.T) {
+	state := &mockAppState{
+		fills: 0,
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/insights", nil)
+	w := httptest.NewRecorder()
+	s.handleInsights(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	scores, ok := resp["market_scores"].([]interface{})
+	if !ok {
+		t.Fatalf("expected market_scores list, got %T", resp["market_scores"])
+	}
+	if len(scores) != 0 {
+		t.Fatalf("expected empty market_scores, got %d", len(scores))
+	}
+
+	recs, ok := resp["recommendations"].([]interface{})
+	if !ok {
+		t.Fatalf("expected recommendations list, got %T", resp["recommendations"])
+	}
+	if !containsActionCode(recs, "collect_more_data") {
+		t.Fatalf("expected collect_more_data recommendation, got %v", recs)
+	}
+}
+
+func TestHandleInsightsRiskBlocked(t *testing.T) {
+	state := &mockAppState{
+		fills: 7,
+		riskSnapshot: risk.Snapshot{
+			EmergencyStop:      true,
+			DailyPnL:           -12,
+			DailyLossLimitUSDC: 10,
+		},
+		positions: map[string]execution.Position{
+			"asset-a": {AssetID: "asset-a", RealizedPnL: 1.2, TotalFills: 7},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/insights", nil)
+	w := httptest.NewRecorder()
+	s.handleInsights(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != false {
+		t.Fatalf("expected can_trade=false, got %v", resp["can_trade"])
+	}
+	recs, ok := resp["recommendations"].([]interface{})
+	if !ok {
+		t.Fatalf("expected recommendations list, got %T", resp["recommendations"])
+	}
+	if !containsActionCode(recs, "pause_trading") {
+		t.Fatalf("expected pause_trading recommendation, got %v", recs)
+	}
+}
+
 func TestHandleTrades(t *testing.T) {
 	state := &mockAppState{
 		recentFills: []execution.Fill{

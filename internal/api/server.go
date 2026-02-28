@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/pnl", s.handlePnL)
 	mux.HandleFunc("/api/perf", s.handlePerf)
 	mux.HandleFunc("/api/coach", s.handleCoach)
+	mux.HandleFunc("/api/insights", s.handleInsights)
 	mux.HandleFunc("/api/grant-report", s.handleGrantReport)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
@@ -735,6 +737,148 @@ func buildCoachActions(
 	return actions
 }
 
+type marketScore struct {
+	AssetID         string  `json:"asset_id"`
+	RealizedPnLUSDC float64 `json:"realized_pnl_usdc"`
+	Fills           int     `json:"fills"`
+	PnLPerFillUSDC  float64 `json:"pnl_per_fill_usdc"`
+	FillSharePct    float64 `json:"fill_share_pct"`
+	Score           float64 `json:"score"`
+	Bucket          string  `json:"bucket"`
+}
+
+func clamp(v, min, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func marketScoreValue(realizedPnL float64, fills int, fillSharePct float64) float64 {
+	score := 50.0
+	if fills > 0 {
+		score += clamp((realizedPnL/float64(fills))*40, -30, 30)
+	}
+	score += clamp(realizedPnL*6, -20, 20)
+	if fills >= 10 {
+		score += 10
+	} else if fills < 3 {
+		score -= 5
+	}
+	if fillSharePct >= 50 && realizedPnL < 0 {
+		score -= 15
+	}
+	return clamp(score, 0, 100)
+}
+
+func marketBucket(score float64) string {
+	if score >= 70 {
+		return "focus"
+	}
+	if score <= 40 {
+		return "deprioritize"
+	}
+	return "monitor"
+}
+
+func buildMarketScores(positions map[string]execution.Position) []marketScore {
+	totalFills := 0
+	for _, pos := range positions {
+		if pos.TotalFills > 0 {
+			totalFills += pos.TotalFills
+		}
+	}
+
+	scores := make([]marketScore, 0, len(positions))
+	for assetID, pos := range positions {
+		if pos.TotalFills <= 0 {
+			continue
+		}
+		fillSharePct := 0.0
+		if totalFills > 0 {
+			fillSharePct = float64(pos.TotalFills) / float64(totalFills) * 100
+		}
+		pnlPerFill := pos.RealizedPnL / float64(pos.TotalFills)
+		score := marketScoreValue(pos.RealizedPnL, pos.TotalFills, fillSharePct)
+		scores = append(scores, marketScore{
+			AssetID:         assetID,
+			RealizedPnLUSDC: pos.RealizedPnL,
+			Fills:           pos.TotalFills,
+			PnLPerFillUSDC:  round2(pnlPerFill),
+			FillSharePct:    round2(fillSharePct),
+			Score:           round2(score),
+			Bucket:          marketBucket(score),
+		})
+	}
+
+	sort.Slice(scores, func(i, j int) bool {
+		if scores[i].Score == scores[j].Score {
+			return scores[i].Fills > scores[j].Fills
+		}
+		return scores[i].Score > scores[j].Score
+	})
+	return scores
+}
+
+func buildInsightRecommendations(
+	canTrade bool,
+	blockedReasons []string,
+	fills int,
+	pnlPerFill float64,
+	scores []marketScore,
+) []coachAction {
+	recs := make([]coachAction, 0, 6)
+	if !canTrade {
+		recs = append(recs, coachAction{
+			Code:     "pause_trading",
+			Severity: "critical",
+			Message:  fmt.Sprintf("Trading blocked by risk rules: %s", strings.Join(blockedReasons, ",")),
+		})
+	}
+	if len(scores) == 0 {
+		recs = append(recs, coachAction{
+			Code:     "collect_more_data",
+			Severity: "info",
+			Message:  "No market-level sample yet; collect fills before ranking markets.",
+		})
+		return recs
+	}
+
+	top := scores[0]
+	recs = append(recs, coachAction{
+		Code:     "focus_top_market",
+		Severity: "info",
+		Message:  fmt.Sprintf("Focus on %s (score %.2f) until edge decays.", top.AssetID, top.Score),
+	})
+
+	worst := scores[len(scores)-1]
+	if worst.Bucket == "deprioritize" {
+		recs = append(recs, coachAction{
+			Code:     "deprioritize_worst_market",
+			Severity: "warn",
+			Message:  fmt.Sprintf("Reduce exposure on %s (score %.2f).", worst.AssetID, worst.Score),
+		})
+	}
+	if fills < 20 {
+		recs = append(recs, coachAction{
+			Code:     "increase_sample_size",
+			Severity: "info",
+			Message:  "Run at least 20 fills before scaling market concentration.",
+		})
+	}
+	if fills >= 10 && pnlPerFill <= 0 {
+		recs = append(recs, coachAction{
+			Code:     "improve_edge_before_scaling",
+			Severity: "warn",
+			Message:  "PnL/fill is non-positive; improve signal quality before increasing size.",
+		})
+	}
+	return recs
+}
+
 // GET /api/risk — current risk guardrail status.
 func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 	snap := s.appState.RiskSnapshot()
@@ -888,6 +1032,56 @@ func (s *Server) handleCoach(w http.ResponseWriter, _ *http.Request) {
 			"suggested_max_order_usdc": round2(suggestedOrderUSDC),
 		},
 		"actions": actions,
+	})
+}
+
+// GET /api/insights — market-level profitability ranking and actionable focus hints.
+func (s *Server) handleInsights(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	pnlPerFill := 0.0
+	if fills > 0 {
+		pnlPerFill = totalPnL / float64(fills)
+	}
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	riskMode, sizeMultiplier := chooseSizingMode(
+		rs.canTrade,
+		rs.usagePct,
+		totalPnL,
+		snap.ConsecutiveLosses,
+		snap.MaxConsecutiveLosses,
+	)
+
+	marketScores := buildMarketScores(s.appState.TrackedPositions())
+	recommendations := buildInsightRecommendations(
+		rs.canTrade,
+		rs.blockedReasons,
+		fills,
+		pnlPerFill,
+		marketScores,
+	)
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":    generatedAt,
+		"trading_mode":    s.appState.TradingMode(),
+		"can_trade":       rs.canTrade,
+		"blocked_reasons": rs.blockedReasons,
+		"market_scores":   marketScores,
+		"recommendations": recommendations,
+		"summary": map[string]interface{}{
+			"fills":               fills,
+			"realized_pnl_usdc":   realized,
+			"unrealized_pnl_usdc": unrealized,
+			"total_pnl_usdc":      totalPnL,
+			"pnl_per_fill_usdc":   round2(pnlPerFill),
+			"risk_mode":           riskMode,
+			"size_multiplier":     sizeMultiplier,
+			"daily_loss_used_pct": round2(rs.usagePct),
+		},
 	})
 }
 
