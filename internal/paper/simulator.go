@@ -121,24 +121,31 @@ func (s *Simulator) ExecuteLimit(assetID, side string, limitPrice, amountUSDC fl
 	}
 
 	if !fillable {
-		return s.openOrder(assetID, side), nil
+		return s.openOrder(assetID, side, limitPrice, amountUSDC), nil
 	}
 	execPrice = applySlippage(execPrice, side, s.cfg.SlippageBps)
 	return s.fill(assetID, side, amountUSDC, execPrice, false)
 }
 
-func (s *Simulator) openOrder(assetID, side string) FillResult {
+func (s *Simulator) openOrder(assetID, side string, price, amountUSDC float64) FillResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sequence++
 	orderID := fmt.Sprintf("paper-order-%06d", s.sequence)
+	size := 0.0
+	if price > 0 {
+		size = amountUSDC / price
+	}
 	return FillResult{
-		OrderID:   orderID,
-		AssetID:   assetID,
-		Side:      side,
-		Status:    "LIVE",
-		Filled:    false,
-		Timestamp: time.Now().UTC(),
+		OrderID:    orderID,
+		AssetID:    assetID,
+		Side:       side,
+		Status:     "LIVE",
+		Filled:     false,
+		Price:      price,
+		Size:       size,
+		AmountUSDC: amountUSDC,
+		Timestamp:  time.Now().UTC(),
 	}
 }
 

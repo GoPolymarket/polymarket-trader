@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -244,5 +245,37 @@ func TestPaperModeMakerReplacesLiveOrdersWithoutLeak(t *testing.T) {
 	secondOpen := len(a.ActiveOrders())
 	if secondOpen != firstOpen {
 		t.Fatalf("expected open paper orders to stay at %d after refresh, got %d", firstOpen, secondOpen)
+	}
+}
+
+func TestPlacePaperLimitUnfilledKeepsOrderMetadata(t *testing.T) {
+	cfg := testConfig()
+	cfg.DryRun = false
+	cfg.TradingMode = "paper"
+	cfg.Maker.Enabled = false
+	cfg.Taker.Enabled = false
+
+	a := New(cfg, nil, nil, nil, nil, nil, nil)
+	a.books.Update(ws.OrderbookEvent{
+		AssetID: "asset-1",
+		Market:  "market-1",
+		Bids:    []ws.OrderbookLevel{{Price: "0.50", Size: "100"}},
+		Asks:    []ws.OrderbookLevel{{Price: "0.52", Size: "100"}},
+	})
+
+	resp := a.placeLimit(context.Background(), "asset-1", "BUY", 0.51, 20)
+	if resp.ID == "" || resp.Status != "LIVE" {
+		t.Fatalf("expected LIVE paper order, got id=%q status=%q", resp.ID, resp.Status)
+	}
+
+	orders := a.ActiveOrders()
+	if len(orders) != 1 {
+		t.Fatalf("expected 1 active order, got %d", len(orders))
+	}
+	if math.Abs(orders[0].Price-0.51) > 1e-9 {
+		t.Fatalf("expected order price 0.51, got %f", orders[0].Price)
+	}
+	if math.Abs(orders[0].OrigSize-20) > 1e-9 {
+		t.Fatalf("expected order orig size 20, got %f", orders[0].OrigSize)
 	}
 }

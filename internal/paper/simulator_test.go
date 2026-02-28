@@ -53,6 +53,18 @@ func TestExecuteLimitOnlyFillsWhenCrossed(t *testing.T) {
 	if noFill.Filled {
 		t.Fatal("expected buy limit below best ask to remain unfilled")
 	}
+	if noFill.Status != "LIVE" {
+		t.Fatalf("expected unfilled order status LIVE, got %s", noFill.Status)
+	}
+	if noFill.Price != 0.51 {
+		t.Fatalf("expected unfilled order price 0.51, got %f", noFill.Price)
+	}
+	if noFill.AmountUSDC != 100 {
+		t.Fatalf("expected unfilled amount 100, got %f", noFill.AmountUSDC)
+	}
+	if noFill.Size <= 0 {
+		t.Fatalf("expected unfilled order to retain positive size, got %f", noFill.Size)
+	}
 
 	fill, err := sim.ExecuteLimit("asset-1", "BUY", 0.53, 100, sampleBook())
 	if err != nil {

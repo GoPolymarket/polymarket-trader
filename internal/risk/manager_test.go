@@ -256,3 +256,31 @@ func TestConsecutiveLossResetOnProfit(t *testing.T) {
 		t.Fatal("expected cooldown to remain inactive after streak reset")
 	}
 }
+
+func TestConsecutiveLossCooldownResetsAfterExpiry(t *testing.T) {
+	m := New(Config{
+		MaxOpenOrders:           20,
+		MaxDailyLossUSDC:        100,
+		MaxPositionPerMarket:    50,
+		MaxConsecutiveLosses:    2,
+		ConsecutiveLossCooldown: time.Minute,
+	})
+
+	m.RecordTradeResult(-1)
+	m.RecordTradeResult(-0.5)
+	if !m.InCooldown() {
+		t.Fatal("expected cooldown after reaching consecutive loss threshold")
+	}
+
+	// Simulate cooldown elapsed without waiting in test.
+	m.cooldownUntil = time.Now().Add(-time.Second)
+
+	// New loss should start a fresh streak, not immediately re-trigger cooldown.
+	m.RecordTradeResult(-0.1)
+	if m.InCooldown() {
+		t.Fatal("expected cooldown to stay inactive after elapsed window and first new loss")
+	}
+	if got := m.ConsecutiveLosses(); got != 1 {
+		t.Fatalf("expected fresh streak count 1 after cooldown expiry, got %d", got)
+	}
+}

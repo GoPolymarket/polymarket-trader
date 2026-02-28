@@ -186,6 +186,12 @@ func (m *Manager) RecordTradeResult(realizedDelta float64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Start a fresh streak when previous cooldown has already elapsed.
+	if !m.cooldownUntil.IsZero() && !time.Now().Before(m.cooldownUntil) {
+		m.cooldownUntil = time.Time{}
+		m.consecutiveLosses = 0
+	}
+
 	if realizedDelta < 0 {
 		m.consecutiveLosses++
 	} else if realizedDelta > 0 {

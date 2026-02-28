@@ -2,11 +2,29 @@ package notify
 
 import (
 	"context"
-	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func testHTTPClient(fn roundTripFunc) *http.Client {
+	return &http.Client{Transport: fn}
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
 
 func TestNewNotifierDisabled(t *testing.T) {
 	n := NewNotifier("", "")
@@ -31,22 +49,21 @@ func TestSendDisabled(t *testing.T) {
 
 func TestSendSuccess(t *testing.T) {
 	var receivedChatID, receivedText string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
 		receivedChatID = r.URL.Query().Get("chat_id")
 		receivedText = r.URL.Query().Get("text")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]bool{"ok": true}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if r.Method != http.MethodPost {
+			return jsonResponse(http.StatusMethodNotAllowed, `{"description":"method not allowed"}`), nil
 		}
-	}))
-	defer server.Close()
+		return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+	})
 
 	n := &Notifier{
 		botToken:   "test-token",
 		chatID:     "test-chat",
-		httpClient: server.Client(),
+		httpClient: client,
 		enabled:    true,
-		baseURL:    server.URL,
+		baseURL:    "https://telegram.test/sendMessage",
 	}
 
 	err := n.Send(context.Background(), "hello world")
@@ -62,20 +79,16 @@ func TestSendSuccess(t *testing.T) {
 }
 
 func TestSendServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		if err := json.NewEncoder(w).Encode(map[string]string{"description": "bad request"}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	}))
-	defer server.Close()
+	client := testHTTPClient(func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusBadRequest, `{"description":"bad request"}`), nil
+	})
 
 	n := &Notifier{
 		botToken:   "test-token",
 		chatID:     "test-chat",
-		httpClient: server.Client(),
+		httpClient: client,
 		enabled:    true,
-		baseURL:    server.URL,
+		baseURL:    "https://telegram.test/sendMessage",
 	}
 
 	err := n.Send(context.Background(), "test")
@@ -93,21 +106,17 @@ func TestNotifyFillDisabled(t *testing.T) {
 
 func TestNotifyFillSuccess(t *testing.T) {
 	var receivedText string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
 		receivedText = r.URL.Query().Get("text")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]bool{"ok": true}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	}))
-	defer server.Close()
+		return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+	})
 
 	n := &Notifier{
 		botToken:   "test-token",
 		chatID:     "test-chat",
-		httpClient: server.Client(),
+		httpClient: client,
 		enabled:    true,
-		baseURL:    server.URL,
+		baseURL:    "https://telegram.test/sendMessage",
 	}
 
 	if err := n.NotifyFill(context.Background(), "asset-1", "BUY", 0.5000, 10.00); err != nil {
