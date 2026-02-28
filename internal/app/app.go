@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,16 +23,17 @@ import (
 	"github.com/GoPolymarket/polymarket-trader/internal/execution"
 	"github.com/GoPolymarket/polymarket-trader/internal/feed"
 	"github.com/GoPolymarket/polymarket-trader/internal/notify"
+	"github.com/GoPolymarket/polymarket-trader/internal/paper"
 	"github.com/GoPolymarket/polymarket-trader/internal/portfolio"
 	"github.com/GoPolymarket/polymarket-trader/internal/risk"
 	"github.com/GoPolymarket/polymarket-trader/internal/strategy"
 )
 
 type App struct {
-	cfg        config.Config
-	clobClient clob.Client
-	wsClient   ws.Client
-	signer     auth.Signer
+	cfg         config.Config
+	clobClient  clob.Client
+	wsClient    ws.Client
+	signer      auth.Signer
 	gammaClient gamma.Client
 	dataClient  data.Client
 
@@ -69,6 +72,13 @@ type App struct {
 	rtdsClient    rtds.Client
 	cryptoTracker *strategy.CryptoSignalTracker
 
+	lastRealizedPnL       float64
+	realizedInitialized   bool
+	dailyRealizedBaseline float64
+	dailyBaselineSet      bool
+	tradingMode           string
+	paperSim              *paper.Simulator
+
 	mu      sync.RWMutex
 	running bool
 }
@@ -76,12 +86,16 @@ type App struct {
 func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer auth.Signer, gammaClient gamma.Client, dataClient data.Client, rtdsClient rtds.Client) *App {
 	tracker := execution.NewTracker()
 	riskMgr := risk.New(risk.Config{
-		MaxOpenOrders:        cfg.Risk.MaxOpenOrders,
-		MaxDailyLossUSDC:     cfg.Risk.MaxDailyLossUSDC,
-		MaxPositionPerMarket: cfg.Risk.MaxPositionPerMarket,
-		StopLossPerMarket:    cfg.Risk.StopLossPerMarket,
-		MaxDrawdownPct:       cfg.Risk.MaxDrawdownPct,
-		RiskSyncInterval:     cfg.Risk.RiskSyncInterval,
+		MaxOpenOrders:           cfg.Risk.MaxOpenOrders,
+		MaxDailyLossUSDC:        cfg.Risk.MaxDailyLossUSDC,
+		MaxDailyLossPct:         cfg.Risk.MaxDailyLossPct,
+		AccountCapitalUSDC:      cfg.Risk.AccountCapitalUSDC,
+		MaxPositionPerMarket:    cfg.Risk.MaxPositionPerMarket,
+		StopLossPerMarket:       cfg.Risk.StopLossPerMarket,
+		MaxDrawdownPct:          cfg.Risk.MaxDrawdownPct,
+		RiskSyncInterval:        cfg.Risk.RiskSyncInterval,
+		MaxConsecutiveLosses:    cfg.Risk.MaxConsecutiveLosses,
+		ConsecutiveLossCooldown: cfg.Risk.ConsecutiveLossCooldown,
 	})
 
 	// Phase 2.4: Telegram notifier.
@@ -96,6 +110,13 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 		flowWindow = 2 * time.Minute
 	}
 	flowTracker := strategy.NewFlowTracker(flowWindow)
+	tradingMode := strings.ToLower(strings.TrimSpace(cfg.TradingMode))
+	if tradingMode == "" {
+		tradingMode = "paper"
+	}
+	if tradingMode != "live" && tradingMode != "paper" {
+		tradingMode = "paper"
+	}
 
 	a := &App{
 		cfg:         cfg,
@@ -129,14 +150,14 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 			FlowWindow:        cfg.Taker.FlowWindow,
 			MinCompositeScore: cfg.Taker.MinCompositeScore,
 		}),
-		tracker:         tracker,
-		flowTracker:     flowTracker,
-		tokenPairs:      make(map[string]string),
-		notifier:        notifier,
-		activeOrders:    make(map[string][]string),
-		assetToMarket:   make(map[string]string),
-		feeRates:        make(map[string]float64),
-		rtdsClient:      rtdsClient,
+		tracker:       tracker,
+		flowTracker:   flowTracker,
+		tokenPairs:    make(map[string]string),
+		notifier:      notifier,
+		activeOrders:  make(map[string][]string),
+		assetToMarket: make(map[string]string),
+		feeRates:      make(map[string]float64),
+		rtdsClient:    rtdsClient,
 		cryptoTracker: strategy.NewCryptoSignalTracker(strategy.CryptoSignalConfig{
 			MinPriceChangePct: 0.02,
 			Cooldown:          5 * time.Minute,
@@ -149,6 +170,14 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 			MaxSpread:      cfg.Selector.MaxSpread,
 			MinDaysToEnd:   cfg.Selector.MinDaysToEnd,
 		}),
+		tradingMode: tradingMode,
+	}
+	if tradingMode == "paper" {
+		a.paperSim = paper.NewSimulator(paper.Config{
+			InitialBalanceUSDC: cfg.Paper.InitialBalanceUSDC,
+			FeeBps:             cfg.Paper.FeeBps,
+			SlippageBps:        cfg.Paper.SlippageBps,
+		})
 	}
 
 	// Phase 2.1: Portfolio tracker.
@@ -216,7 +245,7 @@ func (a *App) Run(ctx context.Context) error {
 	marketIDs := a.collectMarketIDs(assetIDs)
 	var orderCh <-chan ws.OrderEvent
 	var tradeCh <-chan ws.TradeEvent
-	if len(marketIDs) > 0 {
+	if a.tradingMode == "live" && len(marketIDs) > 0 {
 		orderCh, err = a.wsClient.SubscribeUserOrders(ctx, marketIDs)
 		if err != nil {
 			log.Printf("warning: user orders subscription failed: %v", err)
@@ -342,7 +371,7 @@ func (a *App) Run(ctx context.Context) error {
 
 		// Phase 1.3: Daily PnL reset at UTC midnight.
 		case <-dailyResetTimer.C:
-			a.riskMgr.ResetDaily()
+			a.resetDailyRisk()
 			log.Println("daily PnL reset")
 			if a.notifier != nil {
 				_, fills, pnl := a.Stats()
@@ -406,7 +435,11 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 		}
 
 		if old, has := a.activeOrders[event.AssetID]; has && len(old) > 0 {
-			_, _ = a.clobClient.CancelOrders(ctx, &clobtypes.CancelOrdersRequest{OrderIDs: old})
+			if a.tradingMode == "live" && a.clobClient != nil {
+				_, _ = a.clobClient.CancelOrders(ctx, &clobtypes.CancelOrdersRequest{OrderIDs: old})
+			} else if a.tradingMode == "paper" {
+				a.cancelPaperOrders(old)
+			}
 			delete(a.activeOrders, event.AssetID)
 		}
 
@@ -416,13 +449,21 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 			}
 			buyResp := a.placeLimit(ctx, event.AssetID, "BUY", quote.BuyPrice, quote.Size)
 			if buyResp.ID != "" {
-				a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], buyResp.ID)
-				a.tracker.RegisterOrder(buyResp.ID, event.AssetID, event.Market, "BUY", quote.BuyPrice, quote.Size)
+				if a.tradingMode == "live" {
+					a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], buyResp.ID)
+					a.tracker.RegisterOrder(buyResp.ID, event.AssetID, event.Market, "BUY", quote.BuyPrice, quote.Size)
+				} else if strings.EqualFold(buyResp.Status, "LIVE") {
+					a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], buyResp.ID)
+				}
 			}
 			sellResp := a.placeLimit(ctx, event.AssetID, "SELL", quote.SellPrice, quote.Size)
 			if sellResp.ID != "" {
-				a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], sellResp.ID)
-				a.tracker.RegisterOrder(sellResp.ID, event.AssetID, event.Market, "SELL", quote.SellPrice, quote.Size)
+				if a.tradingMode == "live" {
+					a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], sellResp.ID)
+					a.tracker.RegisterOrder(sellResp.ID, event.AssetID, event.Market, "SELL", quote.SellPrice, quote.Size)
+				} else if strings.EqualFold(sellResp.Status, "LIVE") {
+					a.activeOrders[event.AssetID] = append(a.activeOrders[event.AssetID], sellResp.ID)
+				}
 			}
 		} else {
 			log.Printf("[DRY] maker %s: buy=%.4f sell=%.4f size=%.2f",
@@ -444,7 +485,9 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 			resp := a.placeMarket(ctx, sig.AssetID, sig.Side, sig.AmountUSDC)
 			if resp.ID != "" {
 				a.taker.RecordTrade(sig.AssetID)
-				a.tracker.RegisterOrder(resp.ID, sig.AssetID, event.Market, sig.Side, sig.MaxPrice, sig.AmountUSDC)
+				if a.tradingMode == "live" {
+					a.tracker.RegisterOrder(resp.ID, sig.AssetID, event.Market, sig.Side, sig.MaxPrice, sig.AmountUSDC)
+				}
 			}
 		} else {
 			log.Printf("[DRY] taker %s: side=%s amount=%.2f imbalance=%.4f",
@@ -458,7 +501,7 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 
 func (a *App) Shutdown(ctx context.Context) {
 	log.Println("shutting down...")
-	if !a.cfg.DryRun {
+	if !a.cfg.DryRun && a.tradingMode == "live" {
 		log.Println("cancelling all open orders...")
 		resp, err := a.clobClient.CancelAll(ctx)
 		if err != nil {
@@ -515,6 +558,24 @@ func (a *App) ActiveOrders() []execution.OrderState {
 // Positions returns a snapshot of all tracked positions.
 func (a *App) TrackedPositions() map[string]execution.Position {
 	return a.tracker.Positions()
+}
+
+// RiskSnapshot returns the current risk state used by the dashboard API.
+func (a *App) RiskSnapshot() risk.Snapshot {
+	return a.riskMgr.Snapshot()
+}
+
+// TradingMode returns the effective execution mode: live or paper.
+func (a *App) TradingMode() string {
+	return a.tradingMode
+}
+
+// PaperSnapshot returns current paper account metrics (empty in live mode).
+func (a *App) PaperSnapshot() paper.Snapshot {
+	if a.paperSim == nil {
+		return paper.Snapshot{}
+	}
+	return a.paperSim.Snapshot()
 }
 
 // UnrealizedPnL computes unrealized PnL across all positions.
@@ -678,11 +739,15 @@ func (a *App) checkConvergenceArbitrage(ctx context.Context, event ws.OrderbookE
 		resp2 := a.placeMarket(ctx, counterpartID, "BUY", halfAmount)
 
 		if resp1.ID != "" {
-			a.tracker.RegisterOrder(resp1.ID, event.AssetID, event.Market, "BUY", yesMid, halfAmount)
+			if a.tradingMode == "live" {
+				a.tracker.RegisterOrder(resp1.ID, event.AssetID, event.Market, "BUY", yesMid, halfAmount)
+			}
 			log.Printf("convergence arb: bought YES %s @ %.4f", event.AssetID, yesMid)
 		}
 		if resp2.ID != "" {
-			a.tracker.RegisterOrder(resp2.ID, counterpartID, event.Market, "BUY", noMid, halfAmount)
+			if a.tradingMode == "live" {
+				a.tracker.RegisterOrder(resp2.ID, counterpartID, event.Market, "BUY", noMid, halfAmount)
+			}
 			log.Printf("convergence arb: bought NO %s @ %.4f", counterpartID, noMid)
 		}
 	} else {
@@ -700,7 +765,9 @@ func (a *App) checkConvergenceArbitrage(ctx context.Context, event ws.OrderbookE
 
 		resp := a.placeMarket(ctx, targetID, "SELL", amount)
 		if resp.ID != "" {
-			a.tracker.RegisterOrder(resp.ID, targetID, event.Market, "SELL", targetPrice, amount)
+			if a.tradingMode == "live" {
+				a.tracker.RegisterOrder(resp.ID, targetID, event.Market, "SELL", targetPrice, amount)
+			}
 			log.Printf("convergence arb: sold %s @ %.4f (sum=%.4f)", targetID, targetPrice, sum)
 		}
 	}
@@ -734,7 +801,9 @@ func (a *App) handleCryptoPrice(ctx context.Context, ev rtds.CryptoPriceEvent) {
 		resp := a.placeMarket(ctx, sig.MarketAssetID, sig.Side, sig.AmountUSDC)
 		if resp.ID != "" {
 			market := a.assetToMarket[sig.MarketAssetID]
-			a.tracker.RegisterOrder(resp.ID, sig.MarketAssetID, market, sig.Side, 0, sig.AmountUSDC)
+			if a.tradingMode == "live" {
+				a.tracker.RegisterOrder(resp.ID, sig.MarketAssetID, market, sig.Side, 0, sig.AmountUSDC)
+			}
 			log.Printf("crypto trade: %s %s (triggered by %s)", sig.Side, sig.MarketAssetID, sig.Reason)
 		}
 	}
@@ -771,13 +840,17 @@ func (a *App) handleMarketResolution(ctx context.Context, ev ws.MarketResolvedEv
 	// Cancel all orders for resolved market's assets.
 	for _, assetID := range ev.AssetIDs {
 		if ids, has := a.activeOrders[assetID]; has && len(ids) > 0 {
-			_, _ = a.clobClient.CancelOrders(ctx, &clobtypes.CancelOrdersRequest{OrderIDs: ids})
+			if a.tradingMode == "live" && a.clobClient != nil {
+				_, _ = a.clobClient.CancelOrders(ctx, &clobtypes.CancelOrdersRequest{OrderIDs: ids})
+			} else if a.tradingMode == "paper" {
+				a.cancelPaperOrders(ids)
+			}
 			delete(a.activeOrders, assetID)
 		}
 	}
 
 	// Also cancel by market.
-	if ev.Market != "" {
+	if a.tradingMode == "live" && ev.Market != "" {
 		_, _ = a.clobClient.CancelMarketOrders(ctx, &clobtypes.CancelMarketOrdersRequest{Market: ev.Market})
 	}
 }
@@ -854,8 +927,33 @@ func (a *App) rescanMarkets(ctx context.Context, assetIDs *[]string, bookCh *<-c
 
 // riskSync periodically syncs risk state from tracker and checks stop-loss.
 func (a *App) riskSync(ctx context.Context) {
+	currentRealized := a.tracker.TotalRealizedPnL()
+	if !a.realizedInitialized {
+		if currentRealized != 0 {
+			if a.riskMgr.RecordTradeResult(currentRealized) {
+				log.Printf("risk cooldown triggered: consecutive losses=%d", a.riskMgr.ConsecutiveLosses())
+			}
+		}
+		a.lastRealizedPnL = currentRealized
+		a.realizedInitialized = true
+	} else {
+		realizedDelta := currentRealized - a.lastRealizedPnL
+		if realizedDelta != 0 {
+			if a.riskMgr.RecordTradeResult(realizedDelta) {
+				log.Printf("risk cooldown triggered: consecutive losses=%d", a.riskMgr.ConsecutiveLosses())
+			}
+		}
+		a.lastRealizedPnL = currentRealized
+	}
+
+	if !a.dailyBaselineSet {
+		a.dailyRealizedBaseline = currentRealized
+		a.dailyBaselineSet = true
+	}
+	dailyRealized := currentRealized - a.dailyRealizedBaseline
+
 	positions := a.tracker.Positions()
-	a.riskMgr.SyncFromTracker(a.tracker.OpenOrderCount(), positions, a.tracker.TotalRealizedPnL())
+	a.riskMgr.SyncFromTracker(a.tracker.OpenOrderCount(), positions, dailyRealized)
 
 	// Per-market stop-loss checks.
 	for assetID, pos := range positions {
@@ -887,16 +985,33 @@ func (a *App) riskSync(ctx context.Context) {
 		}
 		totalUnrealized += (mid - pos.AvgEntryPrice) * pos.NetSize
 	}
-	if a.riskMgr.EvaluateDrawdown(a.tracker.TotalRealizedPnL(), totalUnrealized, a.cfg.Risk.MaxPositionPerMarket*5) {
+	capital := a.cfg.Risk.AccountCapitalUSDC
+	if capital <= 0 {
+		capital = a.cfg.Risk.MaxPositionPerMarket * 5
+	}
+	if a.riskMgr.EvaluateDrawdown(currentRealized, totalUnrealized, capital) {
 		log.Println("EMERGENCY: max drawdown exceeded, triggering emergency stop")
 		a.SetEmergencyStop(true)
 	}
 }
 
+func (a *App) resetDailyRisk() {
+	a.riskMgr.ResetDaily()
+	currentRealized := a.tracker.TotalRealizedPnL()
+	a.lastRealizedPnL = currentRealized
+	a.realizedInitialized = true
+	a.dailyRealizedBaseline = currentRealized
+	a.dailyBaselineSet = true
+}
+
 // unwindPosition cancels all orders for an asset and places a market order to close.
 func (a *App) unwindPosition(ctx context.Context, assetID string, pos execution.Position) {
 	if ids, has := a.activeOrders[assetID]; has && len(ids) > 0 {
-		_, _ = a.clobClient.CancelOrders(ctx, &clobtypes.CancelOrdersRequest{OrderIDs: ids})
+		if a.tradingMode == "live" && a.clobClient != nil {
+			_, _ = a.clobClient.CancelOrders(ctx, &clobtypes.CancelOrdersRequest{OrderIDs: ids})
+		} else if a.tradingMode == "paper" {
+			a.cancelPaperOrders(ids)
+		}
 		delete(a.activeOrders, assetID)
 	}
 
@@ -913,6 +1028,10 @@ func (a *App) unwindPosition(ctx context.Context, assetID string, pos execution.
 }
 
 func (a *App) placeLimit(ctx context.Context, tokenID, side string, price, sizeUSDC float64) clobtypes.OrderResponse {
+	if a.tradingMode == "paper" {
+		return a.placePaperLimit(tokenID, side, price, sizeUSDC)
+	}
+
 	builder := clob.NewOrderBuilder(a.clobClient, a.signer).
 		TokenID(tokenID).
 		Side(side).
@@ -935,6 +1054,10 @@ func (a *App) placeLimit(ctx context.Context, tokenID, side string, price, sizeU
 }
 
 func (a *App) placeMarket(ctx context.Context, tokenID, side string, amountUSDC float64) clobtypes.OrderResponse {
+	if a.tradingMode == "paper" {
+		return a.placePaperMarket(tokenID, side, amountUSDC)
+	}
+
 	builder := clob.NewOrderBuilder(a.clobClient, a.signer).
 		TokenID(tokenID).
 		Side(side).
@@ -953,6 +1076,99 @@ func (a *App) placeMarket(ctx context.Context, tokenID, side string, amountUSDC 
 	}
 	log.Printf("market %s %s amount=%.2f: id=%s", side, tokenID, amountUSDC, resp.ID)
 	return resp
+}
+
+func (a *App) placePaperLimit(tokenID, side string, price, sizeUSDC float64) clobtypes.OrderResponse {
+	if a.paperSim == nil {
+		return clobtypes.OrderResponse{}
+	}
+	book, ok := a.books.Get(tokenID)
+	if !ok {
+		log.Printf("paper limit %s %s: no book", side, tokenID)
+		return clobtypes.OrderResponse{}
+	}
+	fill, err := a.paperSim.ExecuteLimit(tokenID, side, price, sizeUSDC, book)
+	if err != nil {
+		log.Printf("paper limit %s %s: %v", side, tokenID, err)
+		return clobtypes.OrderResponse{}
+	}
+	a.applyPaperFill(fill)
+	return toPaperOrderResponse(fill)
+}
+
+func (a *App) placePaperMarket(tokenID, side string, amountUSDC float64) clobtypes.OrderResponse {
+	if a.paperSim == nil {
+		return clobtypes.OrderResponse{}
+	}
+	book, ok := a.books.Get(tokenID)
+	if !ok {
+		log.Printf("paper market %s %s: no book", side, tokenID)
+		return clobtypes.OrderResponse{}
+	}
+	fill, err := a.paperSim.ExecuteMarket(tokenID, side, amountUSDC, book)
+	if err != nil {
+		log.Printf("paper market %s %s: %v", side, tokenID, err)
+		return clobtypes.OrderResponse{}
+	}
+	a.applyPaperFill(fill)
+	return toPaperOrderResponse(fill)
+}
+
+func (a *App) applyPaperFill(fill paper.FillResult) {
+	market := a.assetToMarket[fill.AssetID]
+	a.tracker.RegisterOrder(fill.OrderID, fill.AssetID, market, fill.Side, fill.Price, fill.AmountUSDC)
+	matchedSize := "0"
+	if fill.Filled {
+		matchedSize = fmt.Sprintf("%.8f", fill.Size)
+	}
+	a.tracker.ProcessOrderEvent(ws.OrderEvent{
+		ID:           fill.OrderID,
+		AssetID:      fill.AssetID,
+		Market:       market,
+		Side:         fill.Side,
+		Price:        fmt.Sprintf("%.8f", fill.Price),
+		OriginalSize: fmt.Sprintf("%.8f", fill.AmountUSDC),
+		SizeMatched:  matchedSize,
+		Status:       fill.Status,
+	})
+	if fill.Filled {
+		a.tracker.ProcessTradeEvent(ws.TradeEvent{
+			ID:      fill.TradeID,
+			AssetID: fill.AssetID,
+			Price:   fmt.Sprintf("%.8f", fill.Price),
+			Size:    fmt.Sprintf("%.8f", fill.Size),
+			Side:    fill.Side,
+			Market:  market,
+		})
+	}
+}
+
+func (a *App) cancelPaperOrders(orderIDs []string) {
+	if a.tradingMode != "paper" {
+		return
+	}
+	for _, orderID := range orderIDs {
+		a.tracker.ProcessOrderEvent(ws.OrderEvent{
+			ID:     orderID,
+			Status: "CANCELED",
+		})
+	}
+}
+
+func toPaperOrderResponse(fill paper.FillResult) clobtypes.OrderResponse {
+	matchedSize := "0"
+	if fill.Filled {
+		matchedSize = fmt.Sprintf("%.8f", fill.Size)
+	}
+	return clobtypes.OrderResponse{
+		ID:           fill.OrderID,
+		Status:       fill.Status,
+		AssetID:      fill.AssetID,
+		Side:         fill.Side,
+		Price:        fmt.Sprintf("%.8f", fill.Price),
+		OriginalSize: fmt.Sprintf("%.8f", fill.AmountUSDC),
+		SizeMatched:  matchedSize,
+	}
 }
 
 // timeUntilMidnightUTC returns the duration until the next UTC midnight.

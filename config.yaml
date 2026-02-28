@@ -1,12 +1,13 @@
-# config.yaml — polymarket-trader default configuration ($5 capital)
+# config.yaml — polymarket-trader conservative default configuration
 scan_interval: 10s
 dry_run: true
+trading_mode: paper
 log_level: info
 
 maker:
   enabled: true
   markets: []           # empty = auto-select
-  auto_select_top: 2    # only 2 markets with $5
+  auto_select_top: 2    # conservative: limit simultaneous market exposure
   min_spread_bps: 20
   spread_multiplier: 1.5
   order_size_usdc: 1    # $1 per quote side
@@ -34,12 +35,16 @@ taker:
 
 risk:
   max_open_orders: 6
-  max_daily_loss_usdc: 2     # max $2 daily loss (40% of capital)
+  max_daily_loss_usdc: 0     # optional fixed USD cap (0 = disabled)
+  max_daily_loss_pct: 0.02   # 2% daily loss cap
+  account_capital_usdc: 1000 # baseline capital used for pct-based limits
   max_position_per_market: 3 # max $3 per market
   emergency_stop: false
   stop_loss_per_market: 1    # $1 stop-loss per market
   max_drawdown_pct: 0.30     # 30% drawdown = emergency stop
   risk_sync_interval: 5s
+  max_consecutive_losses: 3
+  consecutive_loss_cooldown: 30m
 
 selector:
   rescan_interval: 5m
@@ -47,3 +52,8 @@ selector:
   min_volume_24hr: 500
   max_spread: 0.10
   min_days_to_end: 2
+
+paper:
+  initial_balance_usdc: 1000
+  fee_bps: 10
+  slippage_bps: 10

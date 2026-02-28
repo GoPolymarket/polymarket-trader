@@ -20,11 +20,13 @@ type Config struct {
 	ScanInterval      time.Duration `yaml:"scan_interval"`
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 	DryRun            bool          `yaml:"dry_run"`
+	TradingMode       string        `yaml:"trading_mode"`
 	LogLevel          string        `yaml:"log_level"`
 
 	Maker    MakerConfig    `yaml:"maker"`
 	Taker    TakerConfig    `yaml:"taker"`
 	Risk     RiskConfig     `yaml:"risk"`
+	Paper    PaperConfig    `yaml:"paper"`
 	Selector SelectorConfig `yaml:"selector"`
 	Telegram TelegramConfig `yaml:"telegram"`
 	API      APIConfig      `yaml:"api"`
@@ -39,6 +41,12 @@ type TelegramConfig struct {
 type APIConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Addr    string `yaml:"addr"`
+}
+
+type PaperConfig struct {
+	InitialBalanceUSDC float64 `yaml:"initial_balance_usdc"`
+	FeeBps             float64 `yaml:"fee_bps"`
+	SlippageBps        float64 `yaml:"slippage_bps"`
 }
 
 type MakerConfig struct {
@@ -83,13 +91,17 @@ type SelectorConfig struct {
 }
 
 type RiskConfig struct {
-	MaxOpenOrders        int           `yaml:"max_open_orders"`
-	MaxDailyLossUSDC     float64       `yaml:"max_daily_loss_usdc"`
-	MaxPositionPerMarket float64       `yaml:"max_position_per_market"`
-	EmergencyStop        bool          `yaml:"emergency_stop"`
-	StopLossPerMarket    float64       `yaml:"stop_loss_per_market"`
-	MaxDrawdownPct       float64       `yaml:"max_drawdown_pct"`
-	RiskSyncInterval     time.Duration `yaml:"risk_sync_interval"`
+	MaxOpenOrders           int           `yaml:"max_open_orders"`
+	MaxDailyLossUSDC        float64       `yaml:"max_daily_loss_usdc"`
+	MaxDailyLossPct         float64       `yaml:"max_daily_loss_pct"`
+	AccountCapitalUSDC      float64       `yaml:"account_capital_usdc"`
+	MaxPositionPerMarket    float64       `yaml:"max_position_per_market"`
+	EmergencyStop           bool          `yaml:"emergency_stop"`
+	StopLossPerMarket       float64       `yaml:"stop_loss_per_market"`
+	MaxDrawdownPct          float64       `yaml:"max_drawdown_pct"`
+	RiskSyncInterval        time.Duration `yaml:"risk_sync_interval"`
+	MaxConsecutiveLosses    int           `yaml:"max_consecutive_losses"`
+	ConsecutiveLossCooldown time.Duration `yaml:"consecutive_loss_cooldown"`
 }
 
 func Default() Config {
@@ -97,6 +109,7 @@ func Default() Config {
 		ScanInterval:      10 * time.Second,
 		HeartbeatInterval: 30 * time.Second,
 		DryRun:            true,
+		TradingMode:       "paper",
 		LogLevel:          "info",
 		Maker: MakerConfig{
 			Enabled:              true,
@@ -126,12 +139,16 @@ func Default() Config {
 			MinCompositeScore: 0.3,
 		},
 		Risk: RiskConfig{
-			MaxOpenOrders:        6,
-			MaxDailyLossUSDC:     2,
-			MaxPositionPerMarket: 3,
-			StopLossPerMarket:    1,
-			MaxDrawdownPct:       0.30,
-			RiskSyncInterval:     5 * time.Second,
+			MaxOpenOrders:           6,
+			MaxDailyLossUSDC:        0,
+			MaxDailyLossPct:         0.02,
+			AccountCapitalUSDC:      1000,
+			MaxPositionPerMarket:    3,
+			StopLossPerMarket:       1,
+			MaxDrawdownPct:          0.30,
+			RiskSyncInterval:        5 * time.Second,
+			MaxConsecutiveLosses:    3,
+			ConsecutiveLossCooldown: 30 * time.Minute,
 		},
 		Selector: SelectorConfig{
 			RescanInterval: 5 * time.Minute,
@@ -139,6 +156,11 @@ func Default() Config {
 			MinVolume24hr:  500,
 			MaxSpread:      0.10,
 			MinDaysToEnd:   2,
+		},
+		Paper: PaperConfig{
+			InitialBalanceUSDC: 1000,
+			FeeBps:             10,
+			SlippageBps:        10,
 		},
 		API: APIConfig{
 			Addr: ":8080",
@@ -182,5 +204,8 @@ func (c *Config) ApplyEnv() {
 	}
 	if v := os.Getenv("TRADER_DRY_RUN"); v != "" {
 		c.DryRun = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("TRADER_TRADING_MODE")); v != "" {
+		c.TradingMode = strings.ToLower(v)
 	}
 }

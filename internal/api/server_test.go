@@ -8,38 +8,46 @@ import (
 	"time"
 
 	"github.com/GoPolymarket/polymarket-trader/internal/execution"
+	"github.com/GoPolymarket/polymarket-trader/internal/paper"
+	"github.com/GoPolymarket/polymarket-trader/internal/risk"
 )
 
 type mockAppState struct {
-	running   bool
-	dryRun    bool
-	orders    int
-	fills     int
-	pnl       float64
-	assets    []string
-	positions map[string]execution.Position
-	unrealPnL float64
-	recentFills []execution.Fill
-	activeOrders []execution.OrderState
+	running       bool
+	dryRun        bool
+	orders        int
+	fills         int
+	pnl           float64
+	assets        []string
+	positions     map[string]execution.Position
+	unrealPnL     float64
+	recentFills   []execution.Fill
+	activeOrders  []execution.OrderState
+	riskSnapshot  risk.Snapshot
+	tradingMode   string
+	paperSnapshot paper.Snapshot
 }
 
-func (m *mockAppState) Stats() (int, int, float64)                { return m.orders, m.fills, m.pnl }
-func (m *mockAppState) IsRunning() bool                           { return m.running }
-func (m *mockAppState) IsDryRun() bool                            { return m.dryRun }
-func (m *mockAppState) MonitoredAssets() []string                  { return m.assets }
-func (m *mockAppState) SetEmergencyStop(_ bool)                   {}
-func (m *mockAppState) RecentFills(limit int) []execution.Fill    { return m.recentFills }
-func (m *mockAppState) ActiveOrders() []execution.OrderState      { return m.activeOrders }
+func (m *mockAppState) Stats() (int, int, float64)                      { return m.orders, m.fills, m.pnl }
+func (m *mockAppState) IsRunning() bool                                 { return m.running }
+func (m *mockAppState) IsDryRun() bool                                  { return m.dryRun }
+func (m *mockAppState) MonitoredAssets() []string                       { return m.assets }
+func (m *mockAppState) SetEmergencyStop(_ bool)                         {}
+func (m *mockAppState) RecentFills(limit int) []execution.Fill          { return m.recentFills }
+func (m *mockAppState) ActiveOrders() []execution.OrderState            { return m.activeOrders }
 func (m *mockAppState) TrackedPositions() map[string]execution.Position { return m.positions }
-func (m *mockAppState) UnrealizedPnL() float64                    { return m.unrealPnL }
+func (m *mockAppState) UnrealizedPnL() float64                          { return m.unrealPnL }
+func (m *mockAppState) RiskSnapshot() risk.Snapshot                     { return m.riskSnapshot }
+func (m *mockAppState) TradingMode() string                             { return m.tradingMode }
+func (m *mockAppState) PaperSnapshot() paper.Snapshot                   { return m.paperSnapshot }
 
 type mockPortfolio struct {
 	value    float64
 	lastSync time.Time
 }
 
-func (m *mockPortfolio) TotalValue() float64  { return m.value }
-func (m *mockPortfolio) LastSync() time.Time  { return m.lastSync }
+func (m *mockPortfolio) TotalValue() float64 { return m.value }
+func (m *mockPortfolio) LastSync() time.Time { return m.lastSync }
 
 type mockBuilder struct {
 	lastSync time.Time
@@ -51,12 +59,13 @@ func (m *mockBuilder) LastSync() time.Time          { return m.lastSync }
 
 func TestHandleStatus(t *testing.T) {
 	state := &mockAppState{
-		running: true,
-		dryRun:  true,
-		orders:  5,
-		fills:   10,
-		pnl:     1.23,
-		assets:  []string{"asset-1", "asset-2"},
+		running:     true,
+		dryRun:      true,
+		orders:      5,
+		fills:       10,
+		pnl:         1.23,
+		assets:      []string{"asset-1", "asset-2"},
+		tradingMode: "paper",
 	}
 	portfolio := &mockPortfolio{value: 100.50, lastSync: time.Now()}
 	s := NewServer(":0", state, portfolio, nil)
@@ -88,6 +97,9 @@ func TestHandleStatus(t *testing.T) {
 	}
 	if resp["portfolio_value"].(float64) != 100.50 {
 		t.Errorf("expected portfolio_value=100.50, got %v", resp["portfolio_value"])
+	}
+	if resp["trading_mode"] != "paper" {
+		t.Errorf("expected trading_mode=paper, got %v", resp["trading_mode"])
 	}
 }
 
@@ -243,5 +255,69 @@ func TestHandleMarkets(t *testing.T) {
 	}
 	if int(resp["count"].(float64)) != 3 {
 		t.Errorf("expected count=3, got %v", resp["count"])
+	}
+}
+
+func TestHandleRisk(t *testing.T) {
+	state := &mockAppState{
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -10,
+			DailyLossLimitUSDC:   20,
+			ConsecutiveLosses:    2,
+			MaxConsecutiveLosses: 3,
+			InCooldown:           true,
+			CooldownRemaining:    90 * time.Second,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/risk", nil)
+	w := httptest.NewRecorder()
+	s.handleRisk(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["daily_loss_limit_usdc"].(float64) != 20 {
+		t.Fatalf("expected daily_loss_limit_usdc=20, got %v", resp["daily_loss_limit_usdc"])
+	}
+	if resp["in_cooldown"].(bool) != true {
+		t.Fatalf("expected in_cooldown=true, got %v", resp["in_cooldown"])
+	}
+}
+
+func TestHandlePaper(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		paperSnapshot: paper.Snapshot{
+			InitialBalanceUSDC: 1000,
+			BalanceUSDC:        995.5,
+			FeesPaidUSDC:       0.5,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/paper", nil)
+	w := httptest.NewRecorder()
+	s.handlePaper(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["trading_mode"] != "paper" {
+		t.Fatalf("expected trading_mode paper, got %v", resp["trading_mode"])
+	}
+	if resp["initial_balance_usdc"].(float64) != 1000 {
+		t.Fatalf("expected initial balance 1000, got %v", resp["initial_balance_usdc"])
 	}
 }

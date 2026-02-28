@@ -2,6 +2,7 @@ package risk
 
 import (
 	"testing"
+	"time"
 
 	"github.com/GoPolymarket/polymarket-trader/internal/execution"
 )
@@ -187,5 +188,71 @@ func TestDailyReset(t *testing.T) {
 	m.ResetDaily()
 	if m.DailyPnL() != 0 {
 		t.Fatalf("expected 0 after reset, got %f", m.DailyPnL())
+	}
+}
+
+func TestDailyLossLimitFromCapitalPct(t *testing.T) {
+	m := New(Config{
+		MaxOpenOrders:        20,
+		MaxDailyLossUSDC:     0,
+		MaxPositionPerMarket: 50,
+		AccountCapitalUSDC:   1000,
+		MaxDailyLossPct:      0.02,
+	})
+
+	if got := m.DailyLossLimitUSDC(); got != 20 {
+		t.Fatalf("expected derived daily loss limit 20, got %f", got)
+	}
+
+	m.RecordPnL(-20)
+	if err := m.Allow("token-1", 1); err == nil {
+		t.Fatal("expected block once derived daily loss limit is reached")
+	}
+}
+
+func TestConsecutiveLossCooldown(t *testing.T) {
+	m := New(Config{
+		MaxOpenOrders:           20,
+		MaxDailyLossUSDC:        100,
+		MaxPositionPerMarket:    50,
+		MaxConsecutiveLosses:    3,
+		ConsecutiveLossCooldown: time.Minute,
+	})
+
+	m.RecordTradeResult(-1)
+	m.RecordTradeResult(-0.5)
+	m.RecordTradeResult(-0.25)
+
+	if got := m.ConsecutiveLosses(); got != 3 {
+		t.Fatalf("expected 3 consecutive losses, got %d", got)
+	}
+	if !m.InCooldown() {
+		t.Fatal("expected cooldown to be active after 3 consecutive losses")
+	}
+	if err := m.Allow("token-1", 1); err == nil {
+		t.Fatal("expected allow to block while cooldown is active")
+	}
+}
+
+func TestConsecutiveLossResetOnProfit(t *testing.T) {
+	m := New(Config{
+		MaxOpenOrders:           20,
+		MaxDailyLossUSDC:        100,
+		MaxPositionPerMarket:    50,
+		MaxConsecutiveLosses:    3,
+		ConsecutiveLossCooldown: time.Minute,
+	})
+
+	m.RecordTradeResult(-1)
+	if got := m.ConsecutiveLosses(); got != 1 {
+		t.Fatalf("expected 1 consecutive loss, got %d", got)
+	}
+
+	m.RecordTradeResult(0.5)
+	if got := m.ConsecutiveLosses(); got != 0 {
+		t.Fatalf("expected consecutive losses reset to 0 after profit, got %d", got)
+	}
+	if m.InCooldown() {
+		t.Fatal("expected cooldown to remain inactive after streak reset")
 	}
 }

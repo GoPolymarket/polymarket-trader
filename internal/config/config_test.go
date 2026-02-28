@@ -20,6 +20,21 @@ func TestLoadDefaults(t *testing.T) {
 	if !cfg.DryRun {
 		t.Fatal("expected dry run true by default")
 	}
+	if cfg.Risk.MaxDailyLossPct <= 0 {
+		t.Fatal("expected positive max_daily_loss_pct by default")
+	}
+	if cfg.Risk.AccountCapitalUSDC <= 0 {
+		t.Fatal("expected positive account_capital_usdc by default")
+	}
+	if cfg.Risk.MaxConsecutiveLosses <= 0 {
+		t.Fatal("expected positive max_consecutive_losses by default")
+	}
+	if cfg.TradingMode != "paper" {
+		t.Fatalf("expected trading_mode=paper by default, got %q", cfg.TradingMode)
+	}
+	if cfg.Paper.InitialBalanceUSDC <= 0 {
+		t.Fatal("expected positive paper initial_balance_usdc by default")
+	}
 }
 
 func TestLoadFromYAML(t *testing.T) {
@@ -32,6 +47,15 @@ taker:
   min_imbalance: 0.2
 risk:
   max_daily_loss_usdc: 200
+  max_daily_loss_pct: 0.03
+  account_capital_usdc: 1500
+  max_consecutive_losses: 4
+  consecutive_loss_cooldown: 45m
+trading_mode: live
+paper:
+  initial_balance_usdc: 2000
+  fee_bps: 12
+  slippage_bps: 8
 `
 	f, err := os.CreateTemp("", "config-*.yaml")
 	if err != nil {
@@ -58,6 +82,30 @@ risk:
 	}
 	if cfg.Risk.MaxDailyLossUSDC != 200 {
 		t.Fatalf("expected max daily loss 200, got %f", cfg.Risk.MaxDailyLossUSDC)
+	}
+	if cfg.Risk.MaxDailyLossPct != 0.03 {
+		t.Fatalf("expected max daily loss pct 0.03, got %f", cfg.Risk.MaxDailyLossPct)
+	}
+	if cfg.Risk.AccountCapitalUSDC != 1500 {
+		t.Fatalf("expected account capital 1500, got %f", cfg.Risk.AccountCapitalUSDC)
+	}
+	if cfg.Risk.MaxConsecutiveLosses != 4 {
+		t.Fatalf("expected max consecutive losses 4, got %d", cfg.Risk.MaxConsecutiveLosses)
+	}
+	if cfg.Risk.ConsecutiveLossCooldown != 45*time.Minute {
+		t.Fatalf("expected consecutive loss cooldown 45m, got %v", cfg.Risk.ConsecutiveLossCooldown)
+	}
+	if cfg.TradingMode != "live" {
+		t.Fatalf("expected trading_mode live, got %q", cfg.TradingMode)
+	}
+	if cfg.Paper.InitialBalanceUSDC != 2000 {
+		t.Fatalf("expected paper initial balance 2000, got %f", cfg.Paper.InitialBalanceUSDC)
+	}
+	if cfg.Paper.FeeBps != 12 {
+		t.Fatalf("expected paper fee_bps 12, got %f", cfg.Paper.FeeBps)
+	}
+	if cfg.Paper.SlippageBps != 8 {
+		t.Fatalf("expected paper slippage_bps 8, got %f", cfg.Paper.SlippageBps)
 	}
 	if cfg.ScanInterval != 30*time.Second {
 		t.Fatalf("expected 30s scan interval, got %v", cfg.ScanInterval)
@@ -143,5 +191,14 @@ func TestApplyEnvDryRunTrue(t *testing.T) {
 	cfg.ApplyEnv()
 	if !cfg.DryRun {
 		t.Fatal("expected DryRun true from env 'true'")
+	}
+}
+
+func TestApplyEnvTradingMode(t *testing.T) {
+	t.Setenv("TRADER_TRADING_MODE", "LIVE")
+	cfg := Default()
+	cfg.ApplyEnv()
+	if cfg.TradingMode != "live" {
+		t.Fatalf("expected trading mode from env to be live, got %q", cfg.TradingMode)
 	}
 }

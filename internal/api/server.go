@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/GoPolymarket/polymarket-trader/internal/execution"
+	"github.com/GoPolymarket/polymarket-trader/internal/paper"
+	"github.com/GoPolymarket/polymarket-trader/internal/risk"
 )
 
 // AppState exposes the trading app's state for the API layer.
@@ -23,6 +25,9 @@ type AppState interface {
 	ActiveOrders() []execution.OrderState
 	TrackedPositions() map[string]execution.Position
 	UnrealizedPnL() float64
+	RiskSnapshot() risk.Snapshot
+	TradingMode() string
+	PaperSnapshot() paper.Snapshot
 }
 
 // PortfolioProvider exposes portfolio data (nil if unavailable).
@@ -64,6 +69,8 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/orders", s.handleOrders)
 	mux.HandleFunc("/api/markets", s.handleMarkets)
 	mux.HandleFunc("/api/builder", s.handleBuilder)
+	mux.HandleFunc("/api/risk", s.handleRisk)
+	mux.HandleFunc("/api/paper", s.handlePaper)
 	mux.HandleFunc("/api/emergency-stop", s.handleEmergencyStop)
 
 	s.httpServer = &http.Server{
@@ -103,13 +110,14 @@ func (s *Server) writeJSON(w http.ResponseWriter, v interface{}) {
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	orders, fills, pnl := s.appState.Stats()
 	resp := map[string]interface{}{
-		"running":  s.appState.IsRunning(),
-		"dry_run":  s.appState.IsDryRun(),
-		"uptime_s": time.Since(s.startedAt).Seconds(),
-		"orders":   orders,
-		"fills":    fills,
-		"pnl":      pnl,
-		"assets":   s.appState.MonitoredAssets(),
+		"running":      s.appState.IsRunning(),
+		"dry_run":      s.appState.IsDryRun(),
+		"trading_mode": s.appState.TradingMode(),
+		"uptime_s":     time.Since(s.startedAt).Seconds(),
+		"orders":       orders,
+		"fills":        fills,
+		"pnl":          pnl,
+		"assets":       s.appState.MonitoredAssets(),
 	}
 	if s.portfolio != nil {
 		resp["portfolio_value"] = s.portfolio.TotalValue()
@@ -235,6 +243,41 @@ func (s *Server) handleBuilder(w http.ResponseWriter, _ *http.Request) {
 		"daily_volume": s.builder.DailyVolumeJSON(),
 		"leaderboard":  s.builder.LeaderboardJSON(),
 		"last_sync":    s.builder.LastSync(),
+	})
+}
+
+// GET /api/risk — current risk guardrail status.
+func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
+	snap := s.appState.RiskSnapshot()
+	usagePct := 0.0
+	if snap.DailyLossLimitUSDC > 0 {
+		usagePct = (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
+		if usagePct < 0 {
+			usagePct = 0
+		}
+	}
+	s.writeJSON(w, map[string]interface{}{
+		"emergency_stop":         snap.EmergencyStop,
+		"daily_pnl":              snap.DailyPnL,
+		"daily_loss_limit_usdc":  snap.DailyLossLimitUSDC,
+		"daily_loss_used_pct":    usagePct,
+		"consecutive_losses":     snap.ConsecutiveLosses,
+		"max_consecutive_losses": snap.MaxConsecutiveLosses,
+		"in_cooldown":            snap.InCooldown,
+		"cooldown_remaining_s":   snap.CooldownRemaining.Seconds(),
+	})
+}
+
+// GET /api/paper — paper-trading account snapshot.
+func (s *Server) handlePaper(w http.ResponseWriter, _ *http.Request) {
+	snap := s.appState.PaperSnapshot()
+	s.writeJSON(w, map[string]interface{}{
+		"trading_mode":         s.appState.TradingMode(),
+		"initial_balance_usdc": snap.InitialBalanceUSDC,
+		"balance_usdc":         snap.BalanceUSDC,
+		"fees_paid_usdc":       snap.FeesPaidUSDC,
+		"total_volume_usdc":    snap.TotalVolumeUSDC,
+		"total_trades":         snap.TotalTrades,
 	})
 }
 

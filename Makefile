@@ -1,10 +1,22 @@
-.PHONY: build run test lint cover docker clean
+.PHONY: build run test lint cover docker clean rollout-paper rollout-shadow rollout-live-small rollout-live
 
 build:
 	go build -o bin/trader ./cmd/trader/
 
 run:
 	go run ./cmd/trader/
+
+rollout-paper:
+	./scripts/rollout.sh paper
+
+rollout-shadow:
+	./scripts/rollout.sh shadow
+
+rollout-live-small:
+	./scripts/rollout.sh live-small
+
+rollout-live:
+	./scripts/rollout.sh live
 
 test:
 	go test ./... -v -race -count=1

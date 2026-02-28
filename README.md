@@ -11,6 +11,8 @@ An automated trading bot for the Polymarket CLOB, built on top of [polymarket-go
 - **Market Making** — Quotes two-sided markets with configurable spread and size
 - **Signal Taker** — Detects order book imbalances and takes directional positions
 - **Risk Management** — Three-gate system: max open orders, daily loss limit, per-market position cap
+- **Conservative Safeguards** — Daily loss % guardrail and consecutive-loss cooldown
+- **Paper Trading Mode** — Virtual account execution with real orderbook data
 - **WebSocket-Driven** — Reacts to real-time L2 order book events
 - **Builder Attribution** — Integrates builder auth headers for grant/leaderboard credit
 - **Dry-Run Mode** — Test strategies without placing real orders
@@ -45,7 +47,7 @@ graph TD
 ### Prerequisites
 
 - Go 1.25+
-- Polymarket account with API credentials
+- For `live` mode: Polymarket account with API credentials
 - (Optional) Builder Program credentials
 
 ### Setup
@@ -71,6 +73,32 @@ go run ./cmd/trader/ -config config.yaml
 
 Set `TRADER_DRY_RUN=false` in your `.env` or `dry_run: false` in `config.yaml`.
 
+### Staged Rollout (recommended)
+
+Use the built-in rollout presets to move from paper to small live safely:
+
+```bash
+# 1) Paper fills with virtual balance
+./scripts/rollout.sh paper
+
+# 2) Live connectivity but no real orders
+./scripts/rollout.sh shadow
+
+# 3) Small live caps (maker/taker size and risk clamped)
+./scripts/rollout.sh live-small
+
+# 4) Full live (uses your config values)
+./scripts/rollout.sh live
+```
+
+Equivalent CLI flags:
+
+```bash
+go run ./cmd/trader -config config.yaml -phase live-small
+# Optional explicit mode override:
+go run ./cmd/trader -config config.yaml -mode paper
+```
+
 ## Configuration
 
 ### config.yaml Reference
@@ -79,6 +107,7 @@ Set `TRADER_DRY_RUN=false` in your `.env` or `dry_run: false` in `config.yaml`.
 |-------|------|---------|-------------|
 | `scan_interval` | duration | `10s` | Interval between market scans |
 | `dry_run` | bool | `true` | Log trades without executing |
+| `trading_mode` | string | `paper` | Execution backend (`paper` or `live`) |
 | `log_level` | string | `info` | Log verbosity |
 | **Maker** | | | |
 | `maker.enabled` | bool | `true` | Enable market making |
@@ -98,8 +127,18 @@ Set `TRADER_DRY_RUN=false` in your `.env` or `dry_run: false` in `config.yaml`.
 | `taker.cooldown` | duration | `60s` | Cooldown between trades per market |
 | **Risk** | | | |
 | `risk.max_open_orders` | int | `20` | Maximum concurrent open orders |
-| `risk.max_daily_loss_usdc` | float | `100` | Daily loss limit in USDC |
+| `risk.max_daily_loss_usdc` | float | `0` | Optional fixed daily loss cap (0 disables fixed cap) |
+| `risk.max_daily_loss_pct` | float | `0.02` | Daily loss cap as a fraction of account capital |
+| `risk.account_capital_usdc` | float | `1000` | Baseline capital used for percentage-based limits |
 | `risk.max_position_per_market` | float | `50` | Max USDC exposure per market |
+| `risk.max_consecutive_losses` | int | `3` | Consecutive realized losing trades before cooldown |
+| `risk.consecutive_loss_cooldown` | duration | `30m` | Cooldown window after max consecutive losses |
+| **Paper** | | | |
+| `paper.initial_balance_usdc` | float | `1000` | Starting virtual cash balance |
+| `paper.fee_bps` | float | `10` | Simulated fee model in bps |
+| `paper.slippage_bps` | float | `10` | Simulated slippage model in bps |
+
+Paper mode currently allows `SELL` fills without inventory checks (synthetic short-capable simulation).
 
 ### Environment Variables
 
@@ -115,6 +154,7 @@ All credentials are loaded from environment variables (see `.env.example`):
 | `BUILDER_SECRET` | Builder program secret |
 | `BUILDER_PASSPHRASE` | Builder program passphrase |
 | `TRADER_DRY_RUN` | Override dry-run mode (`true`/`1`) |
+| `TRADER_TRADING_MODE` | Override mode (`paper`/`live`) |
 
 ## Trading Strategies
 
@@ -128,13 +168,23 @@ Evaluates order book imbalance across configurable depth levels. When `|bid_dept
 
 ## Risk Management
 
-Every order passes through three gates before execution:
+Every order passes through conservative guardrails before execution:
 
 1. **Order Count** — Blocks if `open_orders >= max_open_orders`
-2. **Daily PnL** — Blocks if `daily_pnl <= -max_daily_loss_usdc`
+2. **Daily Loss** — Blocks if daily PnL breaches configured fixed or percentage cap
 3. **Position Limit** — Blocks if `position + amount > max_position_per_market`
+4. **Loss Streak Cooldown** — Blocks trading after `max_consecutive_losses` realized losses
+5. **Emergency Stop** — Manual or drawdown-triggered global halt
 
 An emergency stop flag can instantly halt all trading.
+
+## Dashboard API
+
+If `api.enabled=true`, the bot exposes runtime endpoints including:
+- `GET /api/status`
+- `GET /api/pnl`
+- `GET /api/risk` (daily cap usage, cooldown state, loss streak)
+- `GET /api/paper` (paper balance, fees, total virtual volume/trades)
 
 ## Docker Deployment
 
