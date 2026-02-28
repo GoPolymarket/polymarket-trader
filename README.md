@@ -193,6 +193,7 @@ If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/ready` (readiness probe)
 - `GET /api/status`
 - `GET /api/pnl`
+- `GET /api/perf` (performance KPIs: total PnL, PnL/fill, fees, net after fees)
 - `GET /api/builder` (builder daily volume/leaderboard with counts, sync age, and health flags `never_synced`/`stale`)
 - `GET /api/risk` (daily cap usage/headroom + `can_trade` and machine-readable `blocked_reasons`)
 - `GET /api/paper` (paper balance, fees, shorting flag, inventory, realized/unrealized PnL, estimated equity)

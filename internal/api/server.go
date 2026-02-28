@@ -70,6 +70,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/positions", s.handlePositions)
 	mux.HandleFunc("/api/pnl", s.handlePnL)
+	mux.HandleFunc("/api/perf", s.handlePerf)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
 	mux.HandleFunc("/api/markets", s.handleMarkets)
@@ -195,6 +196,39 @@ func (s *Server) handlePnL(w http.ResponseWriter, _ *http.Request) {
 		resp["portfolio_value"] = s.portfolio.TotalValue()
 	}
 	s.writeJSON(w, resp)
+}
+
+// GET /api/perf — high-level performance metrics.
+func (s *Server) handlePerf(w http.ResponseWriter, _ *http.Request) {
+	orders, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	total := realized + unrealized
+	pnlPerFill := 0.0
+	if fills > 0 {
+		pnlPerFill = total / float64(fills)
+	}
+
+	mode := s.appState.TradingMode()
+	paperSnap := s.appState.PaperSnapshot()
+	fees := 0.0
+	var estimatedEquity interface{}
+	if mode == "paper" {
+		fees = paperSnap.FeesPaidUSDC
+		estimatedEquity = paperSnap.InitialBalanceUSDC + total - fees
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"trading_mode":            mode,
+		"orders":                  orders,
+		"fills":                   fills,
+		"realized_pnl_usdc":       realized,
+		"unrealized_pnl_usdc":     unrealized,
+		"total_pnl_usdc":          total,
+		"pnl_per_fill_usdc":       pnlPerFill,
+		"fees_paid_usdc":          fees,
+		"net_pnl_after_fees_usdc": total - fees,
+		"estimated_equity_usdc":   estimatedEquity,
+	})
 }
 
 // GET /api/trades?limit=50 — recent trade fills.

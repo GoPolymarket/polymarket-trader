@@ -156,6 +156,84 @@ func TestHandlePnL(t *testing.T) {
 	}
 }
 
+func TestHandlePerfPaper(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		orders:      1,
+		fills:       4,
+		pnl:         2.0,
+		unrealPnL:   1.5,
+		paperSnapshot: paper.Snapshot{
+			InitialBalanceUSDC: 1000,
+			FeesPaidUSDC:       0.5,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/perf", nil)
+	w := httptest.NewRecorder()
+	s.handlePerf(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["trading_mode"] != "paper" {
+		t.Fatalf("expected trading_mode=paper, got %v", resp["trading_mode"])
+	}
+	if int(resp["fills"].(float64)) != 4 {
+		t.Fatalf("expected fills=4, got %v", resp["fills"])
+	}
+	if resp["total_pnl_usdc"].(float64) != 3.5 {
+		t.Fatalf("expected total_pnl_usdc=3.5, got %v", resp["total_pnl_usdc"])
+	}
+	if resp["pnl_per_fill_usdc"].(float64) != 0.875 {
+		t.Fatalf("expected pnl_per_fill_usdc=0.875, got %v", resp["pnl_per_fill_usdc"])
+	}
+	if resp["fees_paid_usdc"].(float64) != 0.5 {
+		t.Fatalf("expected fees_paid_usdc=0.5, got %v", resp["fees_paid_usdc"])
+	}
+	if resp["net_pnl_after_fees_usdc"].(float64) != 3.0 {
+		t.Fatalf("expected net_pnl_after_fees_usdc=3.0, got %v", resp["net_pnl_after_fees_usdc"])
+	}
+	if resp["estimated_equity_usdc"].(float64) != 1003.0 {
+		t.Fatalf("expected estimated_equity_usdc=1003.0, got %v", resp["estimated_equity_usdc"])
+	}
+}
+
+func TestHandlePerfLive(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "live",
+		fills:       2,
+		pnl:         5.0,
+		unrealPnL:   -1.0,
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/perf", nil)
+	w := httptest.NewRecorder()
+	s.handlePerf(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["trading_mode"] != "live" {
+		t.Fatalf("expected trading_mode=live, got %v", resp["trading_mode"])
+	}
+	if resp["estimated_equity_usdc"] != nil {
+		t.Fatalf("expected estimated_equity_usdc=nil in live mode, got %v", resp["estimated_equity_usdc"])
+	}
+}
+
 func TestHandleTrades(t *testing.T) {
 	state := &mockAppState{
 		recentFills: []execution.Fill{
