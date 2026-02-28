@@ -173,10 +173,12 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 		tradingMode: tradingMode,
 	}
 	if tradingMode == "paper" {
+		allowShort := cfg.Paper.AllowShort
 		a.paperSim = paper.NewSimulator(paper.Config{
 			InitialBalanceUSDC: cfg.Paper.InitialBalanceUSDC,
 			FeeBps:             cfg.Paper.FeeBps,
 			SlippageBps:        cfg.Paper.SlippageBps,
+			AllowShort:         &allowShort,
 		})
 	}
 

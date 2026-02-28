@@ -57,3 +57,4 @@ paper:
   initial_balance_usdc: 1000
   fee_bps: 10
   slippage_bps: 10
+  allow_short: true

@@ -35,6 +35,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Paper.InitialBalanceUSDC <= 0 {
 		t.Fatal("expected positive paper initial_balance_usdc by default")
 	}
+	if !cfg.Paper.AllowShort {
+		t.Fatal("expected paper allow_short=true by default")
+	}
 }
 
 func TestLoadFromYAML(t *testing.T) {
@@ -56,6 +59,7 @@ paper:
   initial_balance_usdc: 2000
   fee_bps: 12
   slippage_bps: 8
+  allow_short: false
 `
 	f, err := os.CreateTemp("", "config-*.yaml")
 	if err != nil {
@@ -106,6 +110,9 @@ paper:
 	}
 	if cfg.Paper.SlippageBps != 8 {
 		t.Fatalf("expected paper slippage_bps 8, got %f", cfg.Paper.SlippageBps)
+	}
+	if cfg.Paper.AllowShort {
+		t.Fatal("expected paper allow_short=false from yaml")
 	}
 	if cfg.ScanInterval != 30*time.Second {
 		t.Fatalf("expected 30s scan interval, got %v", cfg.ScanInterval)

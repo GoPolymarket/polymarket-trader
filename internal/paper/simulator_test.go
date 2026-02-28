@@ -7,6 +7,8 @@ import (
 	"github.com/GoPolymarket/polymarket-go-sdk/pkg/clob/ws"
 )
 
+func boolPtr(v bool) *bool { return &v }
+
 func sampleBook() ws.OrderbookEvent {
 	return ws.OrderbookEvent{
 		AssetID: "asset-1",
@@ -94,5 +96,41 @@ func TestExecuteMarketRejectsInvalidSide(t *testing.T) {
 
 	if _, err := sim.ExecuteMarket("asset-1", "HOLD", 10, sampleBook()); err == nil {
 		t.Fatal("expected invalid side to return error")
+	}
+}
+
+func TestExecuteMarketSellAllowedByDefault(t *testing.T) {
+	sim := NewSimulator(Config{
+		InitialBalanceUSDC: 1000,
+		FeeBps:             0,
+		SlippageBps:        0,
+	})
+
+	if _, err := sim.ExecuteMarket("asset-1", "SELL", 10, sampleBook()); err != nil {
+		t.Fatalf("expected SELL without inventory to be allowed by default, got: %v", err)
+	}
+}
+
+func TestExecuteMarketSellRequiresInventoryWhenShortDisabled(t *testing.T) {
+	sim := NewSimulator(Config{
+		InitialBalanceUSDC: 1000,
+		FeeBps:             0,
+		SlippageBps:        0,
+		AllowShort:         boolPtr(false),
+	})
+
+	// Buy 100 units at ask 0.52 -> amount 52 USDC.
+	if _, err := sim.ExecuteMarket("asset-1", "BUY", 52, sampleBook()); err != nil {
+		t.Fatalf("buy inventory setup failed: %v", err)
+	}
+
+	// Sell 100 units at bid 0.50 -> amount 50 USDC.
+	if _, err := sim.ExecuteMarket("asset-1", "SELL", 50, sampleBook()); err != nil {
+		t.Fatalf("expected SELL with inventory to succeed: %v", err)
+	}
+
+	// Additional sell should fail (inventory now exhausted).
+	if _, err := sim.ExecuteMarket("asset-1", "SELL", 5, sampleBook()); err == nil {
+		t.Fatal("expected SELL without remaining inventory to fail when allow_short=false")
 	}
 }

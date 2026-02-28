@@ -47,6 +47,7 @@ type PaperConfig struct {
 	InitialBalanceUSDC float64 `yaml:"initial_balance_usdc"`
 	FeeBps             float64 `yaml:"fee_bps"`
 	SlippageBps        float64 `yaml:"slippage_bps"`
+	AllowShort         bool    `yaml:"allow_short"`
 }
 
 type MakerConfig struct {
@@ -161,6 +162,7 @@ func Default() Config {
 			InitialBalanceUSDC: 1000,
 			FeeBps:             10,
 			SlippageBps:        10,
+			AllowShort:         true,
 		},
 		API: APIConfig{
 			Addr: ":8080",

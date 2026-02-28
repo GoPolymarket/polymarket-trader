@@ -14,6 +14,7 @@ type Config struct {
 	InitialBalanceUSDC float64 `yaml:"initial_balance_usdc"`
 	FeeBps             float64 `yaml:"fee_bps"`
 	SlippageBps        float64 `yaml:"slippage_bps"`
+	AllowShort         *bool   `yaml:"allow_short"`
 }
 
 type FillResult struct {
@@ -48,6 +49,8 @@ type Simulator struct {
 	feesPaidUSDC    float64
 	totalVolumeUSDC float64
 	totalTrades     int
+	allowShort      bool
+	inventory       map[string]float64 // assetID -> token units (can go negative if shorting)
 }
 
 func NewSimulator(cfg Config) *Simulator {
@@ -55,13 +58,20 @@ func NewSimulator(cfg Config) *Simulator {
 	if initial <= 0 {
 		initial = 1000
 	}
+	allowShort := true
+	if cfg.AllowShort != nil {
+		allowShort = *cfg.AllowShort
+	}
 	return &Simulator{
 		cfg: Config{
 			InitialBalanceUSDC: initial,
 			FeeBps:             cfg.FeeBps,
 			SlippageBps:        cfg.SlippageBps,
+			AllowShort:         cfg.AllowShort,
 		},
 		balanceUSDC: initial,
+		allowShort:  allowShort,
+		inventory:   make(map[string]float64),
 	}
 }
 
@@ -169,6 +179,12 @@ func (s *Simulator) fill(assetID, side string, amountUSDC, price float64, market
 			return FillResult{}, fmt.Errorf("insufficient paper balance: need %.4f have %.4f", amountUSDC+fee, s.balanceUSDC)
 		}
 	case "SELL":
+		if !s.allowShort {
+			current := s.inventory[assetID]
+			if current+1e-9 < size {
+				return FillResult{}, fmt.Errorf("insufficient paper inventory: need %.8f have %.8f", size, current)
+			}
+		}
 	default:
 		return FillResult{}, fmt.Errorf("unsupported side: %s", side)
 	}
@@ -180,8 +196,13 @@ func (s *Simulator) fill(assetID, side string, amountUSDC, price float64, market
 
 	if side == "BUY" {
 		s.balanceUSDC -= amountUSDC + fee
+		s.inventory[assetID] += size
 	} else { // SELL
 		s.balanceUSDC += amountUSDC - fee
+		s.inventory[assetID] -= size
+		if s.inventory[assetID] > -1e-9 && s.inventory[assetID] < 1e-9 {
+			delete(s.inventory, assetID)
+		}
 	}
 	s.feesPaidUSDC += fee
 	s.totalVolumeUSDC += amountUSDC

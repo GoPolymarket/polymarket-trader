@@ -137,8 +137,9 @@ go run ./cmd/trader -config config.yaml -mode paper
 | `paper.initial_balance_usdc` | float | `1000` | Starting virtual cash balance |
 | `paper.fee_bps` | float | `10` | Simulated fee model in bps |
 | `paper.slippage_bps` | float | `10` | Simulated slippage model in bps |
+| `paper.allow_short` | bool | `true` | Allow synthetic short selling in paper mode |
 
-Paper mode currently allows `SELL` fills without inventory checks (synthetic short-capable simulation).
+Set `paper.allow_short: false` to enforce inventory checks before SELL fills in paper mode.
 
 ### Environment Variables
 
