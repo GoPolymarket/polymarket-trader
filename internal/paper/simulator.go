@@ -83,7 +83,7 @@ func (s *Simulator) ExecuteMarket(assetID, side string, amountUSDC float64, book
 		return FillResult{}, err
 	}
 	side = strings.ToUpper(strings.TrimSpace(side))
-	price := bestAsk
+	var price float64
 	switch side {
 	case "BUY":
 		price = bestAsk

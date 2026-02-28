@@ -35,7 +35,9 @@ func TestSendSuccess(t *testing.T) {
 		receivedChatID = r.URL.Query().Get("chat_id")
 		receivedText = r.URL.Query().Get("text")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		if err := json.NewEncoder(w).Encode(map[string]bool{"ok": true}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer server.Close()
 
@@ -62,7 +64,9 @@ func TestSendSuccess(t *testing.T) {
 func TestSendServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"description": "bad request"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"description": "bad request"}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer server.Close()
 
@@ -92,7 +96,9 @@ func TestNotifyFillSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedText = r.URL.Query().Get("text")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		if err := json.NewEncoder(w).Encode(map[string]bool{"ok": true}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer server.Close()
 

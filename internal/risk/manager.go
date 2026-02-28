@@ -58,7 +58,7 @@ func (m *Manager) Allow(tokenID string, amountUSDC float64) error {
 		return fmt.Errorf("emergency stop active")
 	}
 	if m.inCooldownLocked() {
-		return fmt.Errorf("loss cooldown active: %.0fs remaining", m.cooldownUntil.Sub(time.Now()).Seconds())
+		return fmt.Errorf("loss cooldown active: %.0fs remaining", time.Until(m.cooldownUntil).Seconds())
 	}
 	if m.openOrders >= m.cfg.MaxOpenOrders {
 		return fmt.Errorf("max open orders reached: %d/%d", m.openOrders, m.cfg.MaxOpenOrders)
@@ -222,7 +222,7 @@ func (m *Manager) CooldownRemaining() time.Duration {
 	if !m.inCooldownLocked() {
 		return 0
 	}
-	return m.cooldownUntil.Sub(time.Now())
+	return time.Until(m.cooldownUntil)
 }
 
 func (m *Manager) Snapshot() Snapshot {
@@ -231,7 +231,7 @@ func (m *Manager) Snapshot() Snapshot {
 	remaining := time.Duration(0)
 	inCooldown := m.inCooldownLocked()
 	if inCooldown {
-		remaining = m.cooldownUntil.Sub(time.Now())
+		remaining = time.Until(m.cooldownUntil)
 	}
 	return Snapshot{
 		EmergencyStop:        m.emergencyStop,
