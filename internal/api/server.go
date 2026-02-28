@@ -65,6 +65,8 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/ready", s.handleReady)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/positions", s.handlePositions)
 	mux.HandleFunc("/api/pnl", s.handlePnL)
@@ -109,6 +111,29 @@ func (s *Server) writeJSON(w http.ResponseWriter, v interface{}) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// GET /api/health — liveness probe.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, map[string]interface{}{
+		"ok":       true,
+		"uptime_s": time.Since(s.startedAt).Seconds(),
+	})
+}
+
+// GET /api/ready — readiness probe.
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	ready := s.appState.IsRunning()
+	resp := map[string]interface{}{
+		"ready":        ready,
+		"trading_mode": s.appState.TradingMode(),
+		"uptime_s":     time.Since(s.startedAt).Seconds(),
+	}
+	if !ready {
+		resp["reason"] = "app_not_running"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	s.writeJSON(w, resp)
 }
 
 // GET /api/status — overall system status.

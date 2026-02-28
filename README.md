@@ -188,6 +188,8 @@ Startup validation fails fast on invalid risk bounds (for example non-positive `
 ## Dashboard API
 
 If `api.enabled=true`, the bot exposes runtime endpoints including:
+- `GET /api/health` (liveness probe)
+- `GET /api/ready` (readiness probe)
 - `GET /api/status`
 - `GET /api/pnl`
 - `GET /api/builder` (builder daily volume/leaderboard with counts, sync age, and health flags `never_synced`/`stale`)

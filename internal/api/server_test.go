@@ -210,6 +210,72 @@ func TestHandleEmergencyStopMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestHandleHealth(t *testing.T) {
+	s := NewServer(":0", &mockAppState{}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w := httptest.NewRecorder()
+	s.handleHealth(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["ok"] != true {
+		t.Fatalf("expected ok=true, got %v", resp["ok"])
+	}
+	if resp["uptime_s"] == nil {
+		t.Fatal("expected uptime_s in response")
+	}
+}
+
+func TestHandleReady(t *testing.T) {
+	t.Run("running app is ready", func(t *testing.T) {
+		s := NewServer(":0", &mockAppState{running: true}, nil, nil)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/ready", nil)
+		w := httptest.NewRecorder()
+		s.handleReady(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		var resp map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp["ready"] != true {
+			t.Fatalf("expected ready=true, got %v", resp["ready"])
+		}
+	})
+
+	t.Run("stopped app is not ready", func(t *testing.T) {
+		s := NewServer(":0", &mockAppState{running: false}, nil, nil)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/ready", nil)
+		w := httptest.NewRecorder()
+		s.handleReady(w, req)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", w.Code)
+		}
+		var resp map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp["ready"] != false {
+			t.Fatalf("expected ready=false, got %v", resp["ready"])
+		}
+		if resp["reason"] != "app_not_running" {
+			t.Fatalf("expected reason=app_not_running, got %v", resp["reason"])
+		}
+	})
+}
+
 func TestHandleBuilder(t *testing.T) {
 	builder := &mockBuilder{
 		lastSync:    time.Now().Add(-2 * time.Minute),
