@@ -748,6 +748,104 @@ func TestHandleGrantPackageMarkdown(t *testing.T) {
 	}
 }
 
+func TestHandleTelegramTemplates(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       22,
+		pnl:         4.0,
+		unrealPnL:   -0.5,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -2.0,
+			DailyLossLimitUSDC:   25.0,
+			ConsecutiveLosses:    0,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.4,
+			TotalVolumeUSDC: 300.0,
+			TotalTrades:     22,
+		},
+		positions: map[string]execution.Position{
+			"asset-a": {AssetID: "asset-a", RealizedPnL: 3.2, TotalFills: 12},
+			"asset-b": {AssetID: "asset-b", RealizedPnL: -0.8, TotalFills: 10},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/telegram-templates?window=7d", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	daily, ok := resp["daily_template"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected daily_template object, got %T", resp["daily_template"])
+	}
+	if daily["can_trade"] != true {
+		t.Fatalf("expected daily.can_trade=true, got %v", daily["can_trade"])
+	}
+	textDaily, _ := daily["text_html"].(string)
+	if !strings.Contains(textDaily, "Daily Trading Coach") {
+		t.Fatalf("expected daily template title, got %q", textDaily)
+	}
+
+	weekly, ok := resp["weekly_template"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected weekly_template object, got %T", resp["weekly_template"])
+	}
+	textWeekly, _ := weekly["text_html"].(string)
+	if !strings.Contains(textWeekly, "Weekly Trading Review") {
+		t.Fatalf("expected weekly template title, got %q", textWeekly)
+	}
+}
+
+func TestHandleTelegramTemplatesRiskBlocked(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       8,
+		pnl:         -1.0,
+		riskSnapshot: risk.Snapshot{
+			EmergencyStop:      true,
+			DailyPnL:           -15.0,
+			DailyLossLimitUSDC: 10.0,
+			InCooldown:         true,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.3,
+			TotalVolumeUSDC: 120.0,
+			TotalTrades:     8,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/telegram-templates", nil)
+	w := httptest.NewRecorder()
+	s.handleTelegramTemplates(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	daily := resp["daily_template"].(map[string]interface{})
+	if daily["can_trade"] != false {
+		t.Fatalf("expected daily.can_trade=false, got %v", daily["can_trade"])
+	}
+	textDaily, _ := daily["text_html"].(string)
+	if !strings.Contains(strings.ToUpper(textDaily), "PAUSE") {
+		t.Fatalf("expected pause warning in daily template, got %q", textDaily)
+	}
+}
+
 func TestHandleSizingNormal(t *testing.T) {
 	state := &mockAppState{
 		tradingMode: "paper",

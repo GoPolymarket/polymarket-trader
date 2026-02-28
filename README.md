@@ -198,6 +198,7 @@ If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/sizing` (position sizing guidance from risk budget + historical edge, with market allocation weights)
 - `GET /api/insights` (market-level scorecards + focus/deprioritize recommendations for where to allocate capital)
 - `GET /api/execution-quality` (execution loss decomposition: fee drag + slippage proxy + selectivity loss, with optimization recommendations)
+- `GET /api/telegram-templates` (Telegram-ready daily/weekly message templates with action priorities and risk hints; supports `?window=7d|30d`)
 - `GET /api/daily-report` (daily diagnosis: why profit/loss happened, tomorrow risk mode, and prioritized next actions)
 - `GET /api/stage-report` (grant evidence bundle with scorecard, KPI snapshot, strengths/risks, and verifiable `evidence_id` + `checksum_sha256`; supports `?window=7d|30d` and `?format=markdown|csv`)
 - `GET /api/grant-package` (review-ready grant submission package: milestones, artifact index, and manifest checksum; supports `?window=7d|30d` and `?format=markdown`)

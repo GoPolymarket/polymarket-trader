@@ -82,6 +82,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/sizing", s.handleSizing)
 	mux.HandleFunc("/api/insights", s.handleInsights)
 	mux.HandleFunc("/api/execution-quality", s.handleExecutionQuality)
+	mux.HandleFunc("/api/telegram-templates", s.handleTelegramTemplates)
 	mux.HandleFunc("/api/daily-report", s.handleDailyReport)
 	mux.HandleFunc("/api/stage-report", s.handleStageReport)
 	mux.HandleFunc("/api/grant-package", s.handleGrantPackage)
@@ -1720,6 +1721,99 @@ func renderGrantPackageMarkdown(
 	return b.String()
 }
 
+func topActionMessages(actions []coachAction, limit int) []string {
+	if limit <= 0 || len(actions) == 0 {
+		return nil
+	}
+	if len(actions) < limit {
+		limit = len(actions)
+	}
+	out := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, actions[i].Message)
+	}
+	return out
+}
+
+func buildRiskHints(rs riskStatus, riskMode string) []string {
+	hints := make([]string, 0, 4)
+	if !rs.canTrade {
+		hints = append(hints, "PAUSE: risk guardrails are blocking new trades.")
+	}
+	if rs.usagePct >= 80 {
+		hints = append(hints, "Daily loss usage is high; keep defensive size.")
+	}
+	if riskMode == "defensive" {
+		hints = append(hints, "Run defensive sizing (50%) until edge stabilizes.")
+	}
+	if len(rs.blockedReasons) > 0 {
+		hints = append(hints, "Blocked reasons: "+strings.Join(rs.blockedReasons, ","))
+	}
+	return hints
+}
+
+func renderTelegramDailyTemplate(
+	mode string,
+	canTrade bool,
+	riskMode string,
+	netPnLAfterFees float64,
+	fills int,
+	actions []string,
+	riskHints []string,
+) string {
+	status := "ACTIVE"
+	if !canTrade {
+		status = "PAUSE"
+	}
+	var b strings.Builder
+	b.WriteString("<b>Daily Trading Coach</b>\n")
+	b.WriteString(fmt.Sprintf("Mode: %s\nStatus: %s\nRisk Mode: %s\n", mode, status, strings.ToUpper(riskMode)))
+	b.WriteString(fmt.Sprintf("Net PnL After Fees: %.2f USDC\nFills: %d\n", netPnLAfterFees, fills))
+	if len(actions) > 0 {
+		b.WriteString("\n<b>Top Actions</b>\n")
+		for _, a := range actions {
+			b.WriteString("- " + a + "\n")
+		}
+	}
+	if len(riskHints) > 0 {
+		b.WriteString("\n<b>Risk Hints</b>\n")
+		for _, h := range riskHints {
+			b.WriteString("- " + h + "\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func renderTelegramWeeklyTemplate(
+	window stageWindow,
+	totalPnL float64,
+	netPnLAfterFees float64,
+	fills int,
+	netEdgeBps float64,
+	qualityScore float64,
+	highlights []string,
+	warnings []string,
+) string {
+	var b strings.Builder
+	b.WriteString("<b>Weekly Trading Review</b>\n")
+	b.WriteString(fmt.Sprintf("Window: %s (%d days)\n", window.label, window.days))
+	b.WriteString(fmt.Sprintf("Total PnL: %.2f USDC\nNet PnL After Fees: %.2f USDC\n", totalPnL, netPnLAfterFees))
+	b.WriteString(fmt.Sprintf("Fills: %d\nNet Edge: %.2f bps\nQuality Score: %.2f\n", fills, netEdgeBps, qualityScore))
+	if len(highlights) > 0 {
+		b.WriteString("\n<b>Highlights</b>\n")
+		for _, h := range highlights {
+			b.WriteString("- " + h + "\n")
+		}
+	}
+	if len(warnings) > 0 {
+		b.WriteString("\n<b>Warnings</b>\n")
+		for _, w := range warnings {
+			b.WriteString("- " + w + "\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func (s *Server) writeStageReportCSV(
 	w http.ResponseWriter,
 	generatedAt time.Time,
@@ -2176,6 +2270,113 @@ func (s *Server) handleDailyReport(w http.ResponseWriter, _ *http.Request) {
 			"focus_assets":    topFocusAssets(scores, 2),
 		},
 		"next_actions": actions,
+	})
+}
+
+// GET /api/telegram-templates — daily/weekly Telegram-ready message templates.
+func (s *Server) handleTelegramTemplates(w http.ResponseWriter, r *http.Request) {
+	generatedAt := time.Now().UTC()
+	window := parseStageWindow(r.URL.Query().Get("window"))
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	riskMode, _ := chooseSizingMode(
+		rs.canTrade,
+		rs.usagePct,
+		totalPnL,
+		snap.ConsecutiveLosses,
+		snap.MaxConsecutiveLosses,
+	)
+	recentFills := s.appState.RecentFills(200)
+	metrics := calculateExecutionQualityMetrics(
+		mode,
+		fills,
+		totalPnL,
+		s.appState.PaperSnapshot(),
+		recentFills,
+	)
+	breakdown := calculateExecutionLossBreakdown(metrics)
+	scores := buildMarketScores(s.appState.TrackedPositions())
+	actions := buildDailyReportActions(
+		pnlOutcome(metrics.NetPnLAfterFeesUSDC),
+		riskMode,
+		rs,
+		metrics,
+		scores,
+	)
+	actionMessages := topActionMessages(actions, 3)
+	riskHints := buildRiskHints(rs, riskMode)
+
+	highlights := make([]string, 0, 3)
+	warnings := make([]string, 0, 4)
+	if metrics.NetEdgeBps > 0 {
+		highlights = append(highlights, fmt.Sprintf("Net edge remains positive at %.2f bps.", metrics.NetEdgeBps))
+	} else {
+		warnings = append(warnings, fmt.Sprintf("Net edge is non-positive at %.2f bps.", metrics.NetEdgeBps))
+	}
+	if len(scores) > 0 {
+		highlights = append(highlights, fmt.Sprintf("Top market this period: %s (score %.2f).", scores[0].AssetID, scores[0].Score))
+	}
+	if breakdown.FeeDragBps >= 20 {
+		warnings = append(warnings, fmt.Sprintf("Fee drag is elevated (%.2f bps).", breakdown.FeeDragBps))
+	}
+	if breakdown.SlippageProxyBps >= 3 {
+		warnings = append(warnings, fmt.Sprintf("Slippage proxy is elevated (%.2f bps).", breakdown.SlippageProxyBps))
+	}
+	if !rs.canTrade {
+		warnings = append(warnings, "Trading is currently paused by risk guardrails.")
+	}
+
+	dailyText := renderTelegramDailyTemplate(
+		mode,
+		rs.canTrade,
+		riskMode,
+		metrics.NetPnLAfterFeesUSDC,
+		fills,
+		actionMessages,
+		riskHints,
+	)
+	weeklyText := renderTelegramWeeklyTemplate(
+		window,
+		round2(totalPnL),
+		round2(metrics.NetPnLAfterFeesUSDC),
+		fills,
+		metrics.NetEdgeBps,
+		metrics.QualityScore,
+		highlights,
+		warnings,
+	)
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at": generatedAt,
+		"trading_mode": mode,
+		"window": map[string]interface{}{
+			"label": window.label,
+			"days":  window.days,
+		},
+		"daily_template": map[string]interface{}{
+			"can_trade":  rs.canTrade,
+			"risk_mode":  riskMode,
+			"actions":    actionMessages,
+			"risk_hints": riskHints,
+			"text_html":  dailyText,
+		},
+		"weekly_template": map[string]interface{}{
+			"summary": map[string]interface{}{
+				"total_pnl_usdc":          round2(totalPnL),
+				"net_pnl_after_fees_usdc": round2(metrics.NetPnLAfterFeesUSDC),
+				"fills":                   fills,
+				"net_edge_bps":            round2(metrics.NetEdgeBps),
+				"quality_score":           round2(metrics.QualityScore),
+			},
+			"highlights": highlights,
+			"warnings":   warnings,
+			"text_html":  weeklyText,
+		},
 	})
 }
 
