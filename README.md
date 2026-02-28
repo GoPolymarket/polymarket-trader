@@ -197,7 +197,7 @@ If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/coach` (actionable "make more, lose less" guidance: risk mode, size multiplier, and prioritized actions)
 - `GET /api/sizing` (position sizing guidance from risk budget + historical edge, with market allocation weights)
 - `GET /api/insights` (market-level scorecards + focus/deprioritize recommendations for where to allocate capital)
-- `GET /api/execution-quality` (execution loss decomposition: fee drag + slippage proxy + selectivity loss, with optimization recommendations)
+- `GET /api/execution-quality` (execution loss decomposition + profit-uplift model: fee/slippage/selectivity loss in bps and USDC, prioritized uplift scenarios, and optimization recommendations)
 - `GET /api/telegram-templates` (Telegram-ready daily/weekly message templates with action priorities and risk hints; supports `?window=7d|30d`)
 - `GET /api/daily-report` (daily diagnosis: why profit/loss happened, tomorrow risk mode, and prioritized next actions)
 - `GET /api/stage-report` (grant evidence bundle with scorecard, KPI snapshot, strengths/risks, and verifiable `evidence_id` + `checksum_sha256`; supports `?window=7d|30d` and `?format=markdown|csv`)

@@ -963,6 +963,30 @@ type executionLossBreakdown struct {
 	SelectivitySharePct float64 `json:"selectivity_share_pct"`
 }
 
+type executionLossUSDC struct {
+	FeeDragUSDC         float64 `json:"fee_drag_usdc"`
+	SlippageProxyUSDC   float64 `json:"slippage_proxy_usdc"`
+	SelectivityLossUSDC float64 `json:"selectivity_loss_usdc"`
+	AvoidableLossUSDC   float64 `json:"avoidable_loss_usdc"`
+	TotalLossUSDC       float64 `json:"total_loss_usdc"`
+}
+
+type executionUpliftScenario struct {
+	Code                string  `json:"code"`
+	Assumption          string  `json:"assumption"`
+	ImprovementPct      float64 `json:"improvement_pct"`
+	EstimatedUpliftUSDC float64 `json:"estimated_uplift_usdc"`
+}
+
+type executionProfitUplift struct {
+	EstimatedLossUSDC            executionLossUSDC         `json:"estimated_loss_usdc"`
+	Scenarios                    []executionUpliftScenario `json:"scenarios"`
+	TotalPotentialUpliftUSDC     float64                   `json:"total_potential_uplift_usdc"`
+	ProjectedNetPnLAfterFeesUSDC float64                   `json:"projected_net_pnl_after_fees_usdc"`
+	PriorityActionCode           string                    `json:"priority_action_code"`
+	ModelConfidence              string                    `json:"model_confidence"`
+}
+
 func sumFillNotional(fills []execution.Fill) float64 {
 	total := 0.0
 	for _, f := range fills {
@@ -1091,6 +1115,107 @@ func calculateExecutionLossBreakdown(metrics executionQualityMetrics) executionL
 		FeeSharePct:         feeShare,
 		SlippageSharePct:    slippageShare,
 		SelectivitySharePct: selectivityShare,
+	}
+}
+
+func bpsToUSDC(volumeUSDC, bps float64) float64 {
+	if volumeUSDC <= 0 || bps <= 0 {
+		return 0
+	}
+	return round2(volumeUSDC * bps / 10000)
+}
+
+func modelConfidenceFromFills(fills int) string {
+	switch {
+	case fills >= 50:
+		return "high"
+	case fills >= 20:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func actionCodeFromScenario(scenarioCode string) string {
+	switch scenarioCode {
+	case "reduce_fee_drag_30pct":
+		return "reduce_fee_drag"
+	case "reduce_slippage_40pct":
+		return "reduce_slippage"
+	case "improve_selectivity_50pct":
+		return "improve_selectivity"
+	default:
+		return "maintain_execution_discipline"
+	}
+}
+
+func buildExecutionProfitUplift(
+	metrics executionQualityMetrics,
+	breakdown executionLossBreakdown,
+) executionProfitUplift {
+	lossUSDC := executionLossUSDC{
+		FeeDragUSDC:         bpsToUSDC(metrics.VolumeUSDC, breakdown.FeeDragBps),
+		SlippageProxyUSDC:   bpsToUSDC(metrics.VolumeUSDC, breakdown.SlippageProxyBps),
+		SelectivityLossUSDC: bpsToUSDC(metrics.VolumeUSDC, breakdown.SelectivityLossBps),
+		AvoidableLossUSDC:   bpsToUSDC(metrics.VolumeUSDC, breakdown.AvoidableLossBps),
+		TotalLossUSDC:       bpsToUSDC(metrics.VolumeUSDC, breakdown.TotalLossBps),
+	}
+
+	scenarios := make([]executionUpliftScenario, 0, 3)
+	appendScenario := func(code, assumption string, baseLossUSDC, pct float64) {
+		if baseLossUSDC <= 0 || pct <= 0 {
+			return
+		}
+		uplift := round2(baseLossUSDC * pct / 100)
+		if uplift <= 0 {
+			return
+		}
+		scenarios = append(scenarios, executionUpliftScenario{
+			Code:                code,
+			Assumption:          assumption,
+			ImprovementPct:      round2(pct),
+			EstimatedUpliftUSDC: uplift,
+		})
+	}
+	appendScenario(
+		"reduce_fee_drag_30pct",
+		"Lower effective fee drag by 30% via lower-churn execution and cheaper routing.",
+		lossUSDC.FeeDragUSDC,
+		30,
+	)
+	appendScenario(
+		"reduce_slippage_40pct",
+		"Cut slippage proxy by 40% via smaller clips and tighter quote selection.",
+		lossUSDC.SlippageProxyUSDC,
+		40,
+	)
+	appendScenario(
+		"improve_selectivity_50pct",
+		"Recover 50% of selectivity loss by tightening entry filters.",
+		lossUSDC.SelectivityLossUSDC,
+		50,
+	)
+	sort.Slice(scenarios, func(i, j int) bool {
+		return scenarios[i].EstimatedUpliftUSDC > scenarios[j].EstimatedUpliftUSDC
+	})
+
+	totalUplift := 0.0
+	for _, sc := range scenarios {
+		totalUplift += sc.EstimatedUpliftUSDC
+	}
+	totalUplift = round2(totalUplift)
+	priorityAction := "maintain_execution_discipline"
+	if len(scenarios) > 0 {
+		priorityAction = actionCodeFromScenario(scenarios[0].Code)
+	}
+
+	return executionProfitUplift{
+		EstimatedLossUSDC:            lossUSDC,
+		Scenarios:                    scenarios,
+		TotalPotentialUpliftUSDC:     totalUplift,
+		ProjectedNetPnLAfterFeesUSDC: round2(metrics.NetPnLAfterFeesUSDC + totalUplift),
+		PriorityActionCode:           priorityAction,
+		ModelConfidence:              modelConfidenceFromFills(metrics.Fills),
 	}
 }
 
@@ -2116,6 +2241,7 @@ func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) 
 		recentFills,
 	)
 	breakdown := calculateExecutionLossBreakdown(metrics)
+	profitUplift := buildExecutionProfitUplift(metrics, breakdown)
 	recommendations := buildExecutionQualityRecommendations(
 		rs.canTrade,
 		rs.blockedReasons,
@@ -2130,6 +2256,7 @@ func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) 
 		"blocked_reasons": rs.blockedReasons,
 		"metrics":         metrics,
 		"breakdown":       breakdown,
+		"profit_uplift":   profitUplift,
 		"recommendations": recommendations,
 	})
 }

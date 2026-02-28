@@ -1441,6 +1441,27 @@ func TestHandleExecutionQualityPaper(t *testing.T) {
 	if !approxEqual(breakdown["selectivity_loss_bps"].(float64), 0.0) {
 		t.Fatalf("expected selectivity_loss_bps=0, got %v", breakdown["selectivity_loss_bps"])
 	}
+	uplift, ok := resp["profit_uplift"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected profit_uplift object, got %T", resp["profit_uplift"])
+	}
+	lossUSDC, ok := uplift["estimated_loss_usdc"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected estimated_loss_usdc object, got %T", uplift["estimated_loss_usdc"])
+	}
+	if !approxEqual(lossUSDC["fee_drag_usdc"].(float64), 0.5) {
+		t.Fatalf("expected fee_drag_usdc=0.5, got %v", lossUSDC["fee_drag_usdc"])
+	}
+	if uplift["priority_action_code"] != "reduce_fee_drag" {
+		t.Fatalf("expected priority_action_code=reduce_fee_drag, got %v", uplift["priority_action_code"])
+	}
+	scenarios, ok := uplift["scenarios"].([]interface{})
+	if !ok {
+		t.Fatalf("expected scenarios list, got %T", uplift["scenarios"])
+	}
+	if len(scenarios) == 0 {
+		t.Fatalf("expected non-empty scenarios, got %v", scenarios)
+	}
 
 	recs, ok := resp["recommendations"].([]interface{})
 	if !ok {
@@ -1495,6 +1516,13 @@ func TestHandleExecutionQualityLowEdge(t *testing.T) {
 	if !approxEqual(breakdown["slippage_proxy_bps"].(float64), 4.25) {
 		t.Fatalf("expected slippage_proxy_bps=4.25, got %v", breakdown["slippage_proxy_bps"])
 	}
+	uplift, ok := resp["profit_uplift"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected profit_uplift object, got %T", resp["profit_uplift"])
+	}
+	if uplift["priority_action_code"] == "" {
+		t.Fatalf("expected priority_action_code, got %v", uplift["priority_action_code"])
+	}
 
 	recs, ok := resp["recommendations"].([]interface{})
 	if !ok {
@@ -1547,6 +1575,47 @@ func TestHandleExecutionQualityRiskBlocked(t *testing.T) {
 	recs := resp["recommendations"].([]interface{})
 	if !containsActionCode(recs, "pause_trading") {
 		t.Fatalf("expected pause_trading recommendation, got %v", recs)
+	}
+}
+
+func TestBuildExecutionProfitUplift(t *testing.T) {
+	uplift := buildExecutionProfitUplift(
+		executionQualityMetrics{
+			Fills:               25,
+			VolumeUSDC:          1000,
+			NetPnLAfterFeesUSDC: -3,
+		},
+		executionLossBreakdown{
+			FeeDragBps:         6,
+			SlippageProxyBps:   4.25,
+			SelectivityLossBps: 4,
+			AvoidableLossBps:   8.25,
+			TotalLossBps:       14.25,
+		},
+	)
+	if !approxEqual(uplift.EstimatedLossUSDC.FeeDragUSDC, 0.6) {
+		t.Fatalf("expected fee drag 0.6, got %v", uplift.EstimatedLossUSDC.FeeDragUSDC)
+	}
+	if !approxEqual(uplift.EstimatedLossUSDC.SlippageProxyUSDC, 0.43) {
+		t.Fatalf("expected slippage 0.43, got %v", uplift.EstimatedLossUSDC.SlippageProxyUSDC)
+	}
+	if !approxEqual(uplift.EstimatedLossUSDC.SelectivityLossUSDC, 0.4) {
+		t.Fatalf("expected selectivity 0.4, got %v", uplift.EstimatedLossUSDC.SelectivityLossUSDC)
+	}
+	if len(uplift.Scenarios) != 3 {
+		t.Fatalf("expected 3 scenarios, got %d", len(uplift.Scenarios))
+	}
+	if uplift.Scenarios[0].Code != "improve_selectivity_50pct" {
+		t.Fatalf("expected top scenario improve_selectivity_50pct, got %s", uplift.Scenarios[0].Code)
+	}
+	if uplift.PriorityActionCode != "improve_selectivity" {
+		t.Fatalf("expected priority action improve_selectivity, got %s", uplift.PriorityActionCode)
+	}
+	if !approxEqual(uplift.TotalPotentialUpliftUSDC, 0.55) {
+		t.Fatalf("expected total uplift 0.55, got %v", uplift.TotalPotentialUpliftUSDC)
+	}
+	if uplift.ModelConfidence != "medium" {
+		t.Fatalf("expected model confidence medium, got %s", uplift.ModelConfidence)
 	}
 }
 
