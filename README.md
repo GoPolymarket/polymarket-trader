@@ -181,6 +181,7 @@ Every order passes through conservative guardrails before execution:
 5. **Emergency Stop** — Manual or drawdown-triggered global halt
 
 An emergency stop flag can instantly halt all trading.
+Startup validation fails fast on invalid risk bounds (for example non-positive `max_open_orders`, non-positive `risk_sync_interval`, or negative caps).
 
 ## Dashboard API
 
