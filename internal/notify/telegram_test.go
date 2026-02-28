@@ -171,3 +171,51 @@ func TestNotifyRiskCooldownSuccess(t *testing.T) {
 		t.Fatalf("expected cooldown keyword in message, got: %s", receivedText)
 	}
 }
+
+func TestNotifyDailyCoachTemplateSuccess(t *testing.T) {
+	var receivedText string
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		receivedText = r.URL.Query().Get("text")
+		return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+	})
+
+	n := &Notifier{
+		botToken:   "test-token",
+		chatID:     "test-chat",
+		httpClient: client,
+		enabled:    true,
+		baseURL:    "https://telegram.test/sendMessage",
+	}
+
+	msg := "<b>Daily Trading Coach</b>\nStatus: ACTIVE"
+	if err := n.NotifyDailyCoachTemplate(context.Background(), msg); err != nil {
+		t.Fatalf("notify daily coach: %v", err)
+	}
+	if !strings.Contains(receivedText, "Daily Trading Coach") {
+		t.Fatalf("expected daily coach text in payload, got: %s", receivedText)
+	}
+}
+
+func TestNotifyWeeklyReviewTemplateSuccess(t *testing.T) {
+	var receivedText string
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		receivedText = r.URL.Query().Get("text")
+		return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+	})
+
+	n := &Notifier{
+		botToken:   "test-token",
+		chatID:     "test-chat",
+		httpClient: client,
+		enabled:    true,
+		baseURL:    "https://telegram.test/sendMessage",
+	}
+
+	msg := "<b>Weekly Trading Review</b>\nWindow: 7d"
+	if err := n.NotifyWeeklyReviewTemplate(context.Background(), msg); err != nil {
+		t.Fatalf("notify weekly review: %v", err)
+	}
+	if !strings.Contains(receivedText, "Weekly Trading Review") {
+		t.Fatalf("expected weekly review text in payload, got: %s", receivedText)
+	}
+}

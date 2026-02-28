@@ -184,7 +184,7 @@ Every order passes through conservative guardrails before execution:
 
 An emergency stop flag can instantly halt all trading.
 Startup validation fails fast on invalid risk bounds (for example non-positive `max_open_orders`, non-positive `risk_sync_interval`, or negative caps).
-If Telegram notifications are enabled, the bot now alerts when loss-streak cooldown is triggered.
+If Telegram notifications are enabled, the bot alerts on risk cooldown and also auto-sends daily/weekly coaching templates at UTC day boundaries (weekly on Monday UTC).
 
 ## Dashboard API
 

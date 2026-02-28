@@ -90,6 +90,8 @@ type Notifier interface {
 	NotifyEmergencyStop(ctx context.Context) error
 	NotifyDailySummary(ctx context.Context, pnl float64, fills int, volume float64) error
 	NotifyRiskCooldown(ctx context.Context, consecutiveLosses, maxConsecutiveLosses int, cooldownRemaining time.Duration) error
+	NotifyDailyCoachTemplate(ctx context.Context, textHTML string) error
+	NotifyWeeklyReviewTemplate(ctx context.Context, textHTML string) error
 }
 
 func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer auth.Signer, gammaClient gamma.Client, dataClient data.Client, rtdsClient rtds.Client) *App {
@@ -382,12 +384,13 @@ func (a *App) Run(ctx context.Context) error {
 
 		// Phase 1.3: Daily PnL reset at UTC midnight.
 		case <-dailyResetTimer.C:
-			a.resetDailyRisk()
-			log.Println("daily PnL reset")
 			if a.notifier != nil {
+				a.sendScheduledTelegramReports(ctx, time.Now().UTC())
 				_, fills, pnl := a.Stats()
 				_ = a.notifier.NotifyDailySummary(ctx, pnl, fills, 0)
 			}
+			a.resetDailyRisk()
+			log.Println("daily PnL reset")
 			dailyResetTimer.Reset(timeUntilMidnightUTC())
 
 		// Phase 1.5: Market resolution handling.
@@ -1018,6 +1021,228 @@ func (a *App) notifyRiskCooldown(ctx context.Context) {
 		a.cfg.Risk.MaxConsecutiveLosses,
 		a.riskMgr.CooldownRemaining(),
 	)
+}
+
+func riskBlockedReasonsFromSnapshot(snap risk.Snapshot) []string {
+	reasons := make([]string, 0, 3)
+	if snap.EmergencyStop {
+		reasons = append(reasons, "emergency_stop")
+	}
+	if snap.DailyLossLimitUSDC > 0 && snap.DailyPnL <= -snap.DailyLossLimitUSDC {
+		reasons = append(reasons, "daily_loss_limit_reached")
+	}
+	if snap.InCooldown {
+		reasons = append(reasons, "loss_cooldown_active")
+	}
+	return reasons
+}
+
+func riskUsagePctFromSnapshot(snap risk.Snapshot) float64 {
+	if snap.DailyLossLimitUSDC <= 0 {
+		return 0
+	}
+	usage := (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
+	if usage < 0 {
+		usage = 0
+	}
+	return usage
+}
+
+func riskModeFromSnapshot(snap risk.Snapshot, totalPnL float64) string {
+	if len(riskBlockedReasonsFromSnapshot(snap)) > 0 {
+		return "pause"
+	}
+	usage := riskUsagePctFromSnapshot(snap)
+	nearLossStreak := snap.MaxConsecutiveLosses > 1 && snap.ConsecutiveLosses >= snap.MaxConsecutiveLosses-1
+	if usage >= 80 || totalPnL < 0 || nearLossStreak {
+		return "defensive"
+	}
+	return "normal"
+}
+
+func (a *App) bestRealizedMarket() string {
+	positions := a.tracker.Positions()
+	bestAsset := ""
+	bestPnL := -1e18
+	for assetID, pos := range positions {
+		if pos.RealizedPnL > bestPnL {
+			bestPnL = pos.RealizedPnL
+			bestAsset = assetID
+		}
+	}
+	return bestAsset
+}
+
+func (a *App) sendScheduledTelegramReports(ctx context.Context, now time.Time) {
+	if a.notifier == nil {
+		return
+	}
+	daily := a.buildDailyTelegramTemplate()
+	_ = a.notifier.NotifyDailyCoachTemplate(ctx, daily)
+	if shouldSendWeeklyTemplate(now) {
+		weekly := a.buildWeeklyTelegramTemplate(7)
+		_ = a.notifier.NotifyWeeklyReviewTemplate(ctx, weekly)
+	}
+}
+
+func shouldSendWeeklyTemplate(now time.Time) bool {
+	return now.UTC().Weekday() == time.Monday
+}
+
+func (a *App) buildDailyTelegramTemplate() string {
+	mode := strings.ToUpper(a.tradingMode)
+	_, fills, realized := a.Stats()
+	unrealized := a.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	fees := 0.0
+	if a.tradingMode == "paper" {
+		fees = a.PaperSnapshot().FeesPaidUSDC
+	}
+	netPnL := totalPnL - fees
+
+	snap := a.riskMgr.Snapshot()
+	reasons := riskBlockedReasonsFromSnapshot(snap)
+	canTrade := len(reasons) == 0
+	riskMode := strings.ToUpper(riskModeFromSnapshot(snap, totalPnL))
+	status := "ACTIVE"
+	if !canTrade {
+		status = "PAUSE"
+	}
+
+	actions := make([]string, 0, 4)
+	if !canTrade {
+		actions = append(actions, "Pause new trades until risk blockers clear.")
+	} else if riskMode == "DEFENSIVE" {
+		actions = append(actions, "Run defensive size mode (50%) for next cycle.")
+	}
+	if fills < 20 {
+		actions = append(actions, "Collect at least 20 fills before scaling size.")
+	}
+	if netPnL <= 0 {
+		actions = append(actions, "Improve selectivity: tighten entry filters.")
+	}
+	if best := a.bestRealizedMarket(); best != "" {
+		actions = append(actions, fmt.Sprintf("Focus allocation on strongest market: %s.", best))
+	}
+	if len(actions) == 0 {
+		actions = append(actions, "Keep current execution discipline and monitor drift.")
+	}
+	if len(actions) > 3 {
+		actions = actions[:3]
+	}
+
+	hints := make([]string, 0, 3)
+	if usage := riskUsagePctFromSnapshot(snap); usage >= 80 {
+		hints = append(hints, fmt.Sprintf("Daily loss usage is high (%.1f%%).", usage))
+	}
+	if len(reasons) > 0 {
+		hints = append(hints, "Blocked reasons: "+strings.Join(reasons, ","))
+	}
+	if snap.InCooldown {
+		hints = append(hints, fmt.Sprintf("Cooldown remaining: %.0fs.", snap.CooldownRemaining.Seconds()))
+	}
+
+	var b strings.Builder
+	b.WriteString("<b>Daily Trading Coach</b>\n")
+	b.WriteString(fmt.Sprintf("Mode: %s\nStatus: %s\nRisk Mode: %s\n", mode, status, riskMode))
+	b.WriteString(fmt.Sprintf("Net PnL After Fees: %.2f USDC\nFills: %d\n", netPnL, fills))
+	b.WriteString("\n<b>Top Actions</b>\n")
+	for _, a := range actions {
+		b.WriteString("- " + a + "\n")
+	}
+	if len(hints) > 0 {
+		b.WriteString("\n<b>Risk Hints</b>\n")
+		for _, h := range hints {
+			b.WriteString("- " + h + "\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func executionQualityScore(netEdgeBps, feeRateBps float64, fills int) float64 {
+	score := 50.0
+	if netEdgeBps > 10 {
+		score += 20
+	} else if netEdgeBps > 0 {
+		score += 10
+	} else if netEdgeBps < 0 {
+		score -= 15
+	}
+	if fills >= 20 {
+		score += 10
+	}
+	if feeRateBps > 0 && feeRateBps <= 15 {
+		score += 10
+	} else if feeRateBps >= 30 {
+		score -= 10
+	}
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
+
+func (a *App) buildWeeklyTelegramTemplate(windowDays int) string {
+	mode := strings.ToUpper(a.tradingMode)
+	_, fills, realized := a.Stats()
+	unrealized := a.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	fees := 0.0
+	volume := 0.0
+	if a.tradingMode == "paper" {
+		snap := a.PaperSnapshot()
+		fees = snap.FeesPaidUSDC
+		volume = snap.TotalVolumeUSDC
+	}
+	netPnL := totalPnL - fees
+	netEdgeBps := 0.0
+	feeRateBps := 0.0
+	if volume > 0 {
+		netEdgeBps = (netPnL / volume) * 10000
+		feeRateBps = (fees / volume) * 10000
+	}
+	quality := executionQualityScore(netEdgeBps, feeRateBps, fills)
+	snap := a.riskMgr.Snapshot()
+	canTrade := len(riskBlockedReasonsFromSnapshot(snap)) == 0
+
+	var highlights []string
+	var warnings []string
+	if netEdgeBps > 0 {
+		highlights = append(highlights, fmt.Sprintf("Net edge stays positive at %.2f bps.", netEdgeBps))
+	} else {
+		warnings = append(warnings, fmt.Sprintf("Net edge is non-positive at %.2f bps.", netEdgeBps))
+	}
+	if best := a.bestRealizedMarket(); best != "" {
+		highlights = append(highlights, fmt.Sprintf("Best realized market: %s.", best))
+	}
+	if feeRateBps >= 20 {
+		warnings = append(warnings, fmt.Sprintf("Fee drag is elevated (%.2f bps).", feeRateBps))
+	}
+	if !canTrade {
+		warnings = append(warnings, "Risk guardrails paused trading during this window.")
+	}
+
+	var b strings.Builder
+	b.WriteString("<b>Weekly Trading Review</b>\n")
+	b.WriteString(fmt.Sprintf("Mode: %s\nWindow: %dd\n", mode, windowDays))
+	b.WriteString(fmt.Sprintf("Total PnL: %.2f USDC\nNet PnL After Fees: %.2f USDC\n", totalPnL, netPnL))
+	b.WriteString(fmt.Sprintf("Fills: %d\nNet Edge: %.2f bps\nQuality Score: %.2f\n", fills, netEdgeBps, quality))
+	if len(highlights) > 0 {
+		b.WriteString("\n<b>Highlights</b>\n")
+		for _, h := range highlights {
+			b.WriteString("- " + h + "\n")
+		}
+	}
+	if len(warnings) > 0 {
+		b.WriteString("\n<b>Warnings</b>\n")
+		for _, w := range warnings {
+			b.WriteString("- " + w + "\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (a *App) resetDailyRisk() {

@@ -103,3 +103,13 @@ func (n *Notifier) NotifyRiskCooldown(ctx context.Context, consecutiveLosses, ma
 	)
 	return n.Send(ctx, msg)
 }
+
+// NotifyDailyCoachTemplate sends a pre-rendered daily coaching template.
+func (n *Notifier) NotifyDailyCoachTemplate(ctx context.Context, textHTML string) error {
+	return n.Send(ctx, textHTML)
+}
+
+// NotifyWeeklyReviewTemplate sends a pre-rendered weekly review template.
+func (n *Notifier) NotifyWeeklyReviewTemplate(ctx context.Context, textHTML string) error {
+	return n.Send(ctx, textHTML)
+}

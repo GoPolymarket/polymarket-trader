@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,10 +13,14 @@ import (
 )
 
 type mockNotifier struct {
-	riskCooldownCalls int
-	lastConsecutive   int
-	lastMax           int
-	lastCooldown      time.Duration
+	riskCooldownCalls   int
+	lastConsecutive     int
+	lastMax             int
+	lastCooldown        time.Duration
+	dailyTemplateCalls  int
+	weeklyTemplateCalls int
+	lastDailyTemplate   string
+	lastWeeklyTemplate  string
 }
 
 func (m *mockNotifier) NotifyFill(_ context.Context, _ string, _ string, _ float64, _ float64) error {
@@ -39,6 +44,18 @@ func (m *mockNotifier) NotifyRiskCooldown(_ context.Context, consecutiveLosses, 
 	m.lastConsecutive = consecutiveLosses
 	m.lastMax = maxConsecutiveLosses
 	m.lastCooldown = cooldownRemaining
+	return nil
+}
+
+func (m *mockNotifier) NotifyDailyCoachTemplate(_ context.Context, textHTML string) error {
+	m.dailyTemplateCalls++
+	m.lastDailyTemplate = textHTML
+	return nil
+}
+
+func (m *mockNotifier) NotifyWeeklyReviewTemplate(_ context.Context, textHTML string) error {
+	m.weeklyTemplateCalls++
+	m.lastWeeklyTemplate = textHTML
 	return nil
 }
 
@@ -240,6 +257,50 @@ func TestRiskSyncSendsCooldownNotification(t *testing.T) {
 	}
 	if mockN.lastCooldown <= 0 {
 		t.Fatalf("expected positive cooldown remaining, got %v", mockN.lastCooldown)
+	}
+}
+
+func TestSendScheduledTelegramReportsDailyAndWeekly(t *testing.T) {
+	cfg := testConfig()
+	a := New(cfg, nil, nil, nil, nil, nil, nil)
+	mockN := &mockNotifier{}
+	a.notifier = mockN
+
+	// Seed some simple realized PnL so templates include non-zero values.
+	a.tracker.ProcessTradeEvent(ws.TradeEvent{ID: "b-1", AssetID: "asset-1", Side: "BUY", Price: "0.40", Size: "10"})
+	a.tracker.ProcessTradeEvent(ws.TradeEvent{ID: "s-1", AssetID: "asset-1", Side: "SELL", Price: "0.50", Size: "10"})
+
+	monday := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC) // Monday
+	a.sendScheduledTelegramReports(context.Background(), monday)
+
+	if mockN.dailyTemplateCalls != 1 {
+		t.Fatalf("expected 1 daily template call, got %d", mockN.dailyTemplateCalls)
+	}
+	if mockN.weeklyTemplateCalls != 1 {
+		t.Fatalf("expected 1 weekly template call on Monday, got %d", mockN.weeklyTemplateCalls)
+	}
+	if mockN.lastDailyTemplate == "" || !strings.Contains(mockN.lastDailyTemplate, "Daily Trading Coach") {
+		t.Fatalf("expected daily template text, got %q", mockN.lastDailyTemplate)
+	}
+	if mockN.lastWeeklyTemplate == "" || !strings.Contains(mockN.lastWeeklyTemplate, "Weekly Trading Review") {
+		t.Fatalf("expected weekly template text, got %q", mockN.lastWeeklyTemplate)
+	}
+}
+
+func TestSendScheduledTelegramReportsDailyOnly(t *testing.T) {
+	cfg := testConfig()
+	a := New(cfg, nil, nil, nil, nil, nil, nil)
+	mockN := &mockNotifier{}
+	a.notifier = mockN
+
+	tuesday := time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC) // Tuesday
+	a.sendScheduledTelegramReports(context.Background(), tuesday)
+
+	if mockN.dailyTemplateCalls != 1 {
+		t.Fatalf("expected 1 daily template call, got %d", mockN.dailyTemplateCalls)
+	}
+	if mockN.weeklyTemplateCalls != 0 {
+		t.Fatalf("expected 0 weekly template calls on Tuesday, got %d", mockN.weeklyTemplateCalls)
 	}
 }
 
