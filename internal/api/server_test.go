@@ -299,6 +299,9 @@ func TestHandlePaper(t *testing.T) {
 			BalanceUSDC:        995.5,
 			FeesPaidUSDC:       0.5,
 			AllowShort:         false,
+			InventoryByAsset: map[string]float64{
+				"asset-1": 12.5,
+			},
 		},
 	}
 	s := NewServer(":0", state, nil, nil)
@@ -323,5 +326,12 @@ func TestHandlePaper(t *testing.T) {
 	}
 	if resp["allow_short"].(bool) != false {
 		t.Fatalf("expected allow_short false, got %v", resp["allow_short"])
+	}
+	inv, ok := resp["inventory_by_asset"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected inventory_by_asset object, got %T", resp["inventory_by_asset"])
+	}
+	if inv["asset-1"].(float64) != 12.5 {
+		t.Fatalf("expected inventory asset-1=12.5, got %v", inv["asset-1"])
 	}
 }

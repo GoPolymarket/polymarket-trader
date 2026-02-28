@@ -186,7 +186,7 @@ If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/status`
 - `GET /api/pnl`
 - `GET /api/risk` (daily cap usage, cooldown state, loss streak)
-- `GET /api/paper` (paper balance, fees, total virtual volume/trades)
+- `GET /api/paper` (paper balance, fees, shorting flag, inventory snapshot)
 
 ## Docker Deployment
 

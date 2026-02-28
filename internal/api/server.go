@@ -281,6 +281,7 @@ func (s *Server) handlePaper(w http.ResponseWriter, _ *http.Request) {
 		"total_volume_usdc":    snap.TotalVolumeUSDC,
 		"total_trades":         snap.TotalTrades,
 		"allow_short":          snap.AllowShort,
+		"inventory_by_asset":   snap.InventoryByAsset,
 	})
 }
 

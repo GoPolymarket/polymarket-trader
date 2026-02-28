@@ -32,12 +32,13 @@ type FillResult struct {
 }
 
 type Snapshot struct {
-	InitialBalanceUSDC float64 `json:"initial_balance_usdc"`
-	BalanceUSDC        float64 `json:"balance_usdc"`
-	FeesPaidUSDC       float64 `json:"fees_paid_usdc"`
-	TotalVolumeUSDC    float64 `json:"total_volume_usdc"`
-	TotalTrades        int     `json:"total_trades"`
-	AllowShort         bool    `json:"allow_short"`
+	InitialBalanceUSDC float64            `json:"initial_balance_usdc"`
+	BalanceUSDC        float64            `json:"balance_usdc"`
+	FeesPaidUSDC       float64            `json:"fees_paid_usdc"`
+	TotalVolumeUSDC    float64            `json:"total_volume_usdc"`
+	TotalTrades        int                `json:"total_trades"`
+	AllowShort         bool               `json:"allow_short"`
+	InventoryByAsset   map[string]float64 `json:"inventory_by_asset"`
 }
 
 type Simulator struct {
@@ -79,6 +80,10 @@ func NewSimulator(cfg Config) *Simulator {
 func (s *Simulator) Snapshot() Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	inventory := make(map[string]float64, len(s.inventory))
+	for assetID, size := range s.inventory {
+		inventory[assetID] = size
+	}
 	return Snapshot{
 		InitialBalanceUSDC: s.cfg.InitialBalanceUSDC,
 		BalanceUSDC:        s.balanceUSDC,
@@ -86,6 +91,7 @@ func (s *Simulator) Snapshot() Snapshot {
 		TotalVolumeUSDC:    s.totalVolumeUSDC,
 		TotalTrades:        s.totalTrades,
 		AllowShort:         s.allowShort,
+		InventoryByAsset:   inventory,
 	}
 }
 

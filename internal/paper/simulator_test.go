@@ -134,3 +134,26 @@ func TestExecuteMarketSellRequiresInventoryWhenShortDisabled(t *testing.T) {
 		t.Fatal("expected SELL without remaining inventory to fail when allow_short=false")
 	}
 }
+
+func TestSnapshotIncludesInventoryByAsset(t *testing.T) {
+	sim := NewSimulator(Config{
+		InitialBalanceUSDC: 1000,
+		FeeBps:             0,
+		SlippageBps:        0,
+		AllowShort:         boolPtr(false),
+	})
+
+	// Buy 100 units at ask 0.52 -> amount 52 USDC.
+	if _, err := sim.ExecuteMarket("asset-1", "BUY", 52, sampleBook()); err != nil {
+		t.Fatalf("buy inventory setup failed: %v", err)
+	}
+
+	snap := sim.Snapshot()
+	size, ok := snap.InventoryByAsset["asset-1"]
+	if !ok {
+		t.Fatal("expected inventory entry for asset-1")
+	}
+	if math.Abs(size-100) > 1e-6 {
+		t.Fatalf("expected inventory size 100, got %f", size)
+	}
+}
