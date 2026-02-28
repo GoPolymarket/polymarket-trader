@@ -101,6 +101,8 @@ go run ./cmd/trader -config config.yaml -mode paper
 
 ## Configuration
 
+Startup performs config validation and exits fast on invalid critical values (mode, paper fee/slippage, key risk percentages).
+
 ### config.yaml Reference
 
 | Field | Type | Default | Description |

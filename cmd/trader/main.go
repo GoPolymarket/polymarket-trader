@@ -35,6 +35,9 @@ func main() {
 	if err := config.ApplyRolloutPhase(&cfg, *phase); err != nil {
 		log.Fatalf("invalid -phase: %v", err)
 	}
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid config: %v", err)
+	}
 
 	mode := strings.ToLower(strings.TrimSpace(cfg.TradingMode))
 	if mode == "" {
