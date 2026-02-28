@@ -20,6 +20,7 @@ import (
 	"github.com/GoPolymarket/polymarket-trader/internal/execution"
 	"github.com/GoPolymarket/polymarket-trader/internal/paper"
 	"github.com/GoPolymarket/polymarket-trader/internal/risk"
+	"github.com/GoPolymarket/polymarket-trader/internal/telegramtmpl"
 )
 
 const builderStaleAfter = 30 * time.Minute
@@ -1765,23 +1766,15 @@ func renderTelegramDailyTemplate(
 	if !canTrade {
 		status = "PAUSE"
 	}
-	var b strings.Builder
-	b.WriteString("<b>Daily Trading Coach</b>\n")
-	b.WriteString(fmt.Sprintf("Mode: %s\nStatus: %s\nRisk Mode: %s\n", mode, status, strings.ToUpper(riskMode)))
-	b.WriteString(fmt.Sprintf("Net PnL After Fees: %.2f USDC\nFills: %d\n", netPnLAfterFees, fills))
-	if len(actions) > 0 {
-		b.WriteString("\n<b>Top Actions</b>\n")
-		for _, a := range actions {
-			b.WriteString("- " + a + "\n")
-		}
-	}
-	if len(riskHints) > 0 {
-		b.WriteString("\n<b>Risk Hints</b>\n")
-		for _, h := range riskHints {
-			b.WriteString("- " + h + "\n")
-		}
-	}
-	return strings.TrimSpace(b.String())
+	return telegramtmpl.RenderDailyHTML(telegramtmpl.DailyData{
+		Mode:                mode,
+		Status:              status,
+		RiskMode:            strings.ToUpper(riskMode),
+		NetPnLAfterFeesUSDC: netPnLAfterFees,
+		Fills:               fills,
+		Actions:             actions,
+		RiskHints:           riskHints,
+	})
 }
 
 func renderTelegramWeeklyTemplate(
@@ -1794,24 +1787,17 @@ func renderTelegramWeeklyTemplate(
 	highlights []string,
 	warnings []string,
 ) string {
-	var b strings.Builder
-	b.WriteString("<b>Weekly Trading Review</b>\n")
-	b.WriteString(fmt.Sprintf("Window: %s (%d days)\n", window.label, window.days))
-	b.WriteString(fmt.Sprintf("Total PnL: %.2f USDC\nNet PnL After Fees: %.2f USDC\n", totalPnL, netPnLAfterFees))
-	b.WriteString(fmt.Sprintf("Fills: %d\nNet Edge: %.2f bps\nQuality Score: %.2f\n", fills, netEdgeBps, qualityScore))
-	if len(highlights) > 0 {
-		b.WriteString("\n<b>Highlights</b>\n")
-		for _, h := range highlights {
-			b.WriteString("- " + h + "\n")
-		}
-	}
-	if len(warnings) > 0 {
-		b.WriteString("\n<b>Warnings</b>\n")
-		for _, w := range warnings {
-			b.WriteString("- " + w + "\n")
-		}
-	}
-	return strings.TrimSpace(b.String())
+	return telegramtmpl.RenderWeeklyHTML(telegramtmpl.WeeklyData{
+		WindowLabel:         window.label,
+		WindowDays:          window.days,
+		TotalPnLUSDC:        totalPnL,
+		NetPnLAfterFeesUSDC: netPnLAfterFees,
+		Fills:               fills,
+		NetEdgeBps:          netEdgeBps,
+		QualityScore:        qualityScore,
+		Highlights:          highlights,
+		Warnings:            warnings,
+	})
 }
 
 func (s *Server) writeStageReportCSV(

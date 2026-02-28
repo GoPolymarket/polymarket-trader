@@ -27,6 +27,7 @@ import (
 	"github.com/GoPolymarket/polymarket-trader/internal/portfolio"
 	"github.com/GoPolymarket/polymarket-trader/internal/risk"
 	"github.com/GoPolymarket/polymarket-trader/internal/strategy"
+	"github.com/GoPolymarket/polymarket-trader/internal/telegramtmpl"
 )
 
 type App struct {
@@ -1104,10 +1105,6 @@ func (a *App) buildDailyTelegramTemplate() string {
 	reasons := riskBlockedReasonsFromSnapshot(snap)
 	canTrade := len(reasons) == 0
 	riskMode := strings.ToUpper(riskModeFromSnapshot(snap, totalPnL))
-	status := "ACTIVE"
-	if !canTrade {
-		status = "PAUSE"
-	}
 
 	actions := make([]string, 0, 4)
 	if !canTrade {
@@ -1141,22 +1138,19 @@ func (a *App) buildDailyTelegramTemplate() string {
 	if snap.InCooldown {
 		hints = append(hints, fmt.Sprintf("Cooldown remaining: %.0fs.", snap.CooldownRemaining.Seconds()))
 	}
-
-	var b strings.Builder
-	b.WriteString("<b>Daily Trading Coach</b>\n")
-	b.WriteString(fmt.Sprintf("Mode: %s\nStatus: %s\nRisk Mode: %s\n", mode, status, riskMode))
-	b.WriteString(fmt.Sprintf("Net PnL After Fees: %.2f USDC\nFills: %d\n", netPnL, fills))
-	b.WriteString("\n<b>Top Actions</b>\n")
-	for _, a := range actions {
-		b.WriteString("- " + a + "\n")
+	status := "ACTIVE"
+	if !canTrade {
+		status = "PAUSE"
 	}
-	if len(hints) > 0 {
-		b.WriteString("\n<b>Risk Hints</b>\n")
-		for _, h := range hints {
-			b.WriteString("- " + h + "\n")
-		}
-	}
-	return strings.TrimSpace(b.String())
+	return telegramtmpl.RenderDailyHTML(telegramtmpl.DailyData{
+		Mode:                mode,
+		Status:              status,
+		RiskMode:            riskMode,
+		NetPnLAfterFeesUSDC: netPnL,
+		Fills:               fills,
+		Actions:             actions,
+		RiskHints:           hints,
+	})
 }
 
 func executionQualityScore(netEdgeBps, feeRateBps float64, fills int) float64 {
@@ -1224,25 +1218,18 @@ func (a *App) buildWeeklyTelegramTemplate(windowDays int) string {
 	if !canTrade {
 		warnings = append(warnings, "Risk guardrails paused trading during this window.")
 	}
-
-	var b strings.Builder
-	b.WriteString("<b>Weekly Trading Review</b>\n")
-	b.WriteString(fmt.Sprintf("Mode: %s\nWindow: %dd\n", mode, windowDays))
-	b.WriteString(fmt.Sprintf("Total PnL: %.2f USDC\nNet PnL After Fees: %.2f USDC\n", totalPnL, netPnL))
-	b.WriteString(fmt.Sprintf("Fills: %d\nNet Edge: %.2f bps\nQuality Score: %.2f\n", fills, netEdgeBps, quality))
-	if len(highlights) > 0 {
-		b.WriteString("\n<b>Highlights</b>\n")
-		for _, h := range highlights {
-			b.WriteString("- " + h + "\n")
-		}
-	}
-	if len(warnings) > 0 {
-		b.WriteString("\n<b>Warnings</b>\n")
-		for _, w := range warnings {
-			b.WriteString("- " + w + "\n")
-		}
-	}
-	return strings.TrimSpace(b.String())
+	return telegramtmpl.RenderWeeklyHTML(telegramtmpl.WeeklyData{
+		Mode:                mode,
+		WindowLabel:         fmt.Sprintf("%dd", windowDays),
+		WindowDays:          windowDays,
+		TotalPnLUSDC:        totalPnL,
+		NetPnLAfterFeesUSDC: netPnL,
+		Fills:               fills,
+		NetEdgeBps:          netEdgeBps,
+		QualityScore:        quality,
+		Highlights:          highlights,
+		Warnings:            warnings,
+	})
 }
 
 func (a *App) resetDailyRisk() {
