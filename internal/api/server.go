@@ -80,6 +80,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/insights", s.handleInsights)
 	mux.HandleFunc("/api/execution-quality", s.handleExecutionQuality)
 	mux.HandleFunc("/api/daily-report", s.handleDailyReport)
+	mux.HandleFunc("/api/stage-report", s.handleStageReport)
 	mux.HandleFunc("/api/grant-report", s.handleGrantReport)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
@@ -604,6 +605,53 @@ type riskStatus struct {
 	canTrade       bool
 }
 
+type builderStatus struct {
+	configured         bool
+	dailyVolumeCount   int
+	leaderboardCount   int
+	lastSyncAgeSeconds interface{}
+	neverSynced        bool
+	stale              bool
+	fresh              bool
+}
+
+func (s *Server) currentBuilderStatus() builderStatus {
+	if s.builder == nil {
+		return builderStatus{
+			configured:         false,
+			dailyVolumeCount:   0,
+			leaderboardCount:   0,
+			lastSyncAgeSeconds: nil,
+			neverSynced:        true,
+			stale:              false,
+			fresh:              false,
+		}
+	}
+
+	lastSync := s.builder.LastSync()
+	neverSynced := lastSync.IsZero()
+	stale := neverSynced
+	var lastSyncAgeSeconds interface{}
+	if !neverSynced {
+		age := time.Since(lastSync)
+		if age < 0 {
+			age = 0
+		}
+		lastSyncAgeSeconds = age.Seconds()
+		stale = age > builderStaleAfter
+	}
+	fresh := !neverSynced && !stale
+	return builderStatus{
+		configured:         true,
+		dailyVolumeCount:   countEntries(s.builder.DailyVolumeJSON()),
+		leaderboardCount:   countEntries(s.builder.LeaderboardJSON()),
+		lastSyncAgeSeconds: lastSyncAgeSeconds,
+		neverSynced:        neverSynced,
+		stale:              stale,
+		fresh:              fresh,
+	}
+}
+
 func buildRiskStatus(snap risk.Snapshot) riskStatus {
 	st := riskStatus{
 		usagePct:       0,
@@ -1118,6 +1166,114 @@ func buildDailyReportActions(
 	return uniqueCoachActions(actions)
 }
 
+func calcReadinessScore(builderFresh, canTrade, hasTradingActivity bool) int {
+	score := 0
+	if builderFresh {
+		score += 40
+	}
+	if canTrade {
+		score += 30
+	}
+	if hasTradingActivity {
+		score += 30
+	}
+	return score
+}
+
+func buildStageNarrative(
+	builder builderStatus,
+	rs riskStatus,
+	metrics executionQualityMetrics,
+	fills int,
+) (strengths []string, risks []string) {
+	strengths = make([]string, 0, 5)
+	risks = make([]string, 0, 5)
+
+	if builder.fresh {
+		strengths = append(strengths, "Builder sync is fresh and attribution evidence is available.")
+	} else {
+		risks = append(risks, "Builder sync is stale or missing; attribution evidence may be weak.")
+	}
+	if rs.canTrade {
+		strengths = append(strengths, "Risk guardrails allow trading and system is operational.")
+	} else {
+		risks = append(risks, fmt.Sprintf("Risk blocks trading: %s.", strings.Join(rs.blockedReasons, ",")))
+	}
+	if metrics.NetEdgeBps > 0 {
+		strengths = append(strengths, fmt.Sprintf("Net execution edge stays positive (%.2f bps).", metrics.NetEdgeBps))
+	} else {
+		risks = append(risks, fmt.Sprintf("Net execution edge is non-positive (%.2f bps).", metrics.NetEdgeBps))
+	}
+	if metrics.FeeRateBps > 25 {
+		risks = append(risks, fmt.Sprintf("Execution friction is elevated (%.2f bps fees).", metrics.FeeRateBps))
+	} else if metrics.FeeRateBps > 0 {
+		strengths = append(strengths, fmt.Sprintf("Execution friction is controlled (%.2f bps fees).", metrics.FeeRateBps))
+	}
+	if fills >= 20 {
+		strengths = append(strengths, fmt.Sprintf("Sample size is sufficient for evaluation (%d fills).", fills))
+	} else {
+		risks = append(risks, fmt.Sprintf("Sample size is limited (%d fills); confidence is lower.", fills))
+	}
+	return strengths, risks
+}
+
+func renderStageReportMarkdown(
+	generatedAt time.Time,
+	tradingMode string,
+	grantReadinessScore int,
+	readinessScore int,
+	qualityScore float64,
+	kpis map[string]interface{},
+	strengths []string,
+	risks []string,
+	actions []coachAction,
+) string {
+	totalPnL, _ := kpis["total_pnl_usdc"].(float64)
+	netPnL, _ := kpis["net_pnl_after_fees_usdc"].(float64)
+	netEdge, _ := kpis["net_edge_bps"].(float64)
+	feeRate, _ := kpis["fee_rate_bps"].(float64)
+
+	var b strings.Builder
+	b.WriteString("# Polymarket Trader Stage Report\n\n")
+	b.WriteString(fmt.Sprintf("- Generated At (UTC): %s\n", generatedAt.Format(time.RFC3339)))
+	b.WriteString(fmt.Sprintf("- Trading Mode: %s\n", tradingMode))
+	b.WriteString(fmt.Sprintf("- Grant Readiness Score: %d\n", grantReadinessScore))
+	b.WriteString(fmt.Sprintf("- Readiness Score: %d\n", readinessScore))
+	b.WriteString(fmt.Sprintf("- Execution Quality Score: %.2f\n\n", qualityScore))
+
+	b.WriteString("## KPI Snapshot\n")
+	b.WriteString(fmt.Sprintf("- Fills: %v\n", kpis["fills"]))
+	b.WriteString(fmt.Sprintf("- Total PnL (USDC): %.2f\n", totalPnL))
+	b.WriteString(fmt.Sprintf("- Net PnL After Fees (USDC): %.2f\n", netPnL))
+	b.WriteString(fmt.Sprintf("- Net Edge (bps): %.2f\n", netEdge))
+	b.WriteString(fmt.Sprintf("- Fee Rate (bps): %.2f\n\n", feeRate))
+
+	b.WriteString("## Strengths\n")
+	for _, s := range strengths {
+		b.WriteString("- " + s + "\n")
+	}
+	if len(strengths) == 0 {
+		b.WriteString("- None detected.\n")
+	}
+
+	b.WriteString("\n## Risks\n")
+	for _, r := range risks {
+		b.WriteString("- " + r + "\n")
+	}
+	if len(risks) == 0 {
+		b.WriteString("- No major risk detected.\n")
+	}
+
+	b.WriteString("\n## Next Actions\n")
+	for _, a := range actions {
+		b.WriteString(fmt.Sprintf("- [%s] %s\n", a.Code, a.Message))
+	}
+	if len(actions) == 0 {
+		b.WriteString("- Keep current plan and continue monitoring.\n")
+	}
+	return b.String()
+}
+
 // GET /api/risk — current risk guardrail status.
 func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 	snap := s.appState.RiskSnapshot()
@@ -1429,6 +1585,119 @@ func (s *Server) handleDailyReport(w http.ResponseWriter, _ *http.Request) {
 			"focus_assets":    topFocusAssets(scores, 2),
 		},
 		"next_actions": actions,
+	})
+}
+
+// GET /api/stage-report — grant-facing evidence bundle for current stage.
+func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	paperSnap := s.appState.PaperSnapshot()
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	builder := s.currentBuilderStatus()
+	hasTradingActivity := fills > 0
+	readinessScore := calcReadinessScore(builder.fresh, rs.canTrade, hasTradingActivity)
+
+	recentFills := s.appState.RecentFills(200)
+	metrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, paperSnap, recentFills)
+	grantReadinessScore := int(math.Round(float64(readinessScore)*0.6 + metrics.QualityScore*0.4))
+	if grantReadinessScore < 0 {
+		grantReadinessScore = 0
+	}
+	if grantReadinessScore > 100 {
+		grantReadinessScore = 100
+	}
+
+	kpis := map[string]interface{}{
+		"fills":                   fills,
+		"realized_pnl_usdc":       round2(realized),
+		"unrealized_pnl_usdc":     round2(unrealized),
+		"total_pnl_usdc":          round2(totalPnL),
+		"fees_paid_usdc":          round2(metrics.FeesPaidUSDC),
+		"net_pnl_after_fees_usdc": round2(metrics.NetPnLAfterFeesUSDC),
+		"net_edge_bps":            round2(metrics.NetEdgeBps),
+		"fee_rate_bps":            round2(metrics.FeeRateBps),
+	}
+
+	strengths, risks := buildStageNarrative(builder, rs, metrics, fills)
+	riskMode, _ := chooseSizingMode(
+		rs.canTrade,
+		rs.usagePct,
+		totalPnL,
+		snap.ConsecutiveLosses,
+		snap.MaxConsecutiveLosses,
+	)
+	scores := buildMarketScores(s.appState.TrackedPositions())
+	actions := buildDailyReportActions(
+		pnlOutcome(metrics.NetPnLAfterFeesUSDC),
+		riskMode,
+		rs,
+		metrics,
+		scores,
+	)
+
+	if format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))); format == "markdown" || format == "md" {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		md := renderStageReportMarkdown(
+			generatedAt,
+			mode,
+			grantReadinessScore,
+			readinessScore,
+			metrics.QualityScore,
+			kpis,
+			strengths,
+			risks,
+			actions,
+		)
+		if _, err := w.Write([]byte(md)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":    generatedAt,
+		"trading_mode":    mode,
+		"can_trade":       rs.canTrade,
+		"blocked_reasons": rs.blockedReasons,
+		"scorecard": map[string]interface{}{
+			"grant_readiness_score": grantReadinessScore,
+			"readiness_score":       readinessScore,
+			"quality_score":         metrics.QualityScore,
+			"builder_fresh":         builder.fresh,
+			"risk_tradable":         rs.canTrade,
+			"has_trading_activity":  hasTradingActivity,
+			"positive_net_edge":     metrics.NetEdgeBps > 0,
+		},
+		"kpis": kpis,
+		"builder": map[string]interface{}{
+			"configured":         builder.configured,
+			"daily_volume_count": builder.dailyVolumeCount,
+			"leaderboard_count":  builder.leaderboardCount,
+			"last_sync_age_s":    builder.lastSyncAgeSeconds,
+			"never_synced":       builder.neverSynced,
+			"stale":              builder.stale,
+		},
+		"narrative": map[string]interface{}{
+			"strengths": strengths,
+			"risks":     risks,
+		},
+		"next_actions": actions,
+		"evidence": map[string]interface{}{
+			"endpoints": []string{
+				"/api/grant-report",
+				"/api/coach",
+				"/api/insights",
+				"/api/execution-quality",
+				"/api/daily-report",
+			},
+			"version": "stage-report-v1",
+		},
 	})
 }
 

@@ -198,6 +198,7 @@ If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/insights` (market-level scorecards + focus/deprioritize recommendations for where to allocate capital)
 - `GET /api/execution-quality` (execution friction attribution: fee drag, edge vs cost, quality score, and optimization recommendations)
 - `GET /api/daily-report` (daily diagnosis: why profit/loss happened, tomorrow risk mode, and prioritized next actions)
+- `GET /api/stage-report` (grant evidence bundle with scorecard, KPI snapshot, strengths/risks, and `?format=markdown` export)
 - `GET /api/grant-report` (single payload aggregating builder + risk + performance + readiness scorecard; add `?format=csv` for export)
 - `GET /api/builder` (builder daily volume/leaderboard with counts, sync age, and health flags `never_synced`/`stale`)
 - `GET /api/risk` (daily cap usage/headroom + `can_trade` and machine-readable `blocked_reasons`)

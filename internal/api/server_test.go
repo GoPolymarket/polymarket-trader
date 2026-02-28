@@ -392,6 +392,124 @@ func TestHandleGrantReportCSV(t *testing.T) {
 	}
 }
 
+func TestHandleStageReportJSON(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       18,
+		pnl:         4.5,
+		unrealPnL:   -0.5,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -2,
+			DailyLossLimitUSDC:   20,
+			ConsecutiveLosses:    0,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			InitialBalanceUSDC: 1000,
+			FeesPaidUSDC:       0.6,
+			TotalVolumeUSDC:    300,
+			TotalTrades:        18,
+		},
+		positions: map[string]execution.Position{
+			"asset-1": {AssetID: "asset-1", RealizedPnL: 3.0, TotalFills: 10},
+			"asset-2": {AssetID: "asset-2", RealizedPnL: -0.8, TotalFills: 8},
+		},
+	}
+	builder := &mockBuilder{
+		lastSync:    time.Now().Add(-5 * time.Minute),
+		dailyVolume: []string{"v1", "v2", "v3"},
+		leaderboard: []string{"l1"},
+	}
+	s := NewServer(":0", state, nil, builder)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stage-report", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["generated_at"] == nil {
+		t.Fatal("expected generated_at")
+	}
+	if resp["trading_mode"] != "paper" {
+		t.Fatalf("expected trading_mode=paper, got %v", resp["trading_mode"])
+	}
+
+	scorecard, ok := resp["scorecard"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected scorecard object, got %T", resp["scorecard"])
+	}
+	if scorecard["grant_readiness_score"].(float64) <= 0 {
+		t.Fatalf("expected positive grant_readiness_score, got %v", scorecard["grant_readiness_score"])
+	}
+	if scorecard["builder_fresh"] != true {
+		t.Fatalf("expected builder_fresh=true, got %v", scorecard["builder_fresh"])
+	}
+
+	kpis, ok := resp["kpis"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected kpis object, got %T", resp["kpis"])
+	}
+	if int(kpis["fills"].(float64)) != 18 {
+		t.Fatalf("expected fills=18, got %v", kpis["fills"])
+	}
+	if kpis["net_edge_bps"] == nil {
+		t.Fatal("expected net_edge_bps")
+	}
+
+	narrative, ok := resp["narrative"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected narrative object, got %T", resp["narrative"])
+	}
+	strengths, ok := narrative["strengths"].([]interface{})
+	if !ok || len(strengths) == 0 {
+		t.Fatalf("expected non-empty strengths, got %v", narrative["strengths"])
+	}
+}
+
+func TestHandleStageReportMarkdown(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       12,
+		pnl:         1.5,
+		unrealPnL:   0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -1,
+			DailyLossLimitUSDC: 20,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.2,
+			TotalVolumeUSDC: 180,
+			TotalTrades:     12,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stage-report?format=markdown", nil)
+	w := httptest.NewRecorder()
+	s.handleStageReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/markdown") {
+		t.Fatalf("expected markdown content type, got %q", got)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "# Polymarket Trader Stage Report") {
+		t.Fatalf("expected markdown title, got %q", body)
+	}
+	if !strings.Contains(body, "Grant Readiness Score:") {
+		t.Fatalf("expected readiness line, got %q", body)
+	}
+}
+
 func TestHandleCoachNormal(t *testing.T) {
 	state := &mockAppState{
 		tradingMode: "paper",
