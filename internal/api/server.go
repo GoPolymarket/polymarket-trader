@@ -71,6 +71,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/positions", s.handlePositions)
 	mux.HandleFunc("/api/pnl", s.handlePnL)
 	mux.HandleFunc("/api/perf", s.handlePerf)
+	mux.HandleFunc("/api/grant-report", s.handleGrantReport)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
 	mux.HandleFunc("/api/markets", s.handleMarkets)
@@ -228,6 +229,116 @@ func (s *Server) handlePerf(w http.ResponseWriter, _ *http.Request) {
 		"fees_paid_usdc":          fees,
 		"net_pnl_after_fees_usdc": total - fees,
 		"estimated_equity_usdc":   estimatedEquity,
+	})
+}
+
+// GET /api/grant-report — aggregated metrics for builder/grant review.
+func (s *Server) handleGrantReport(w http.ResponseWriter, _ *http.Request) {
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	total := realized + unrealized
+	mode := s.appState.TradingMode()
+	paperSnap := s.appState.PaperSnapshot()
+	fees := 0.0
+	var estimatedEquity interface{}
+	if mode == "paper" {
+		fees = paperSnap.FeesPaidUSDC
+		estimatedEquity = paperSnap.InitialBalanceUSDC + total - fees
+	}
+
+	builderData := map[string]interface{}{
+		"configured":         false,
+		"daily_volume_count": 0,
+		"leaderboard_count":  0,
+		"last_sync":          nil,
+		"last_sync_age_s":    nil,
+		"never_synced":       true,
+		"stale":              false,
+		"stale_after_s":      builderStaleAfter.Seconds(),
+	}
+	if s.builder != nil {
+		dailyVolume := s.builder.DailyVolumeJSON()
+		leaderboard := s.builder.LeaderboardJSON()
+		lastSync := s.builder.LastSync()
+		neverSynced := lastSync.IsZero()
+		var ageSeconds interface{}
+		stale := neverSynced
+		if !neverSynced {
+			age := time.Since(lastSync)
+			if age < 0 {
+				age = 0
+			}
+			ageSeconds = age.Seconds()
+			stale = age > builderStaleAfter
+		}
+		builderData = map[string]interface{}{
+			"configured":         true,
+			"daily_volume_count": countEntries(dailyVolume),
+			"leaderboard_count":  countEntries(leaderboard),
+			"last_sync":          lastSync,
+			"last_sync_age_s":    ageSeconds,
+			"never_synced":       neverSynced,
+			"stale":              stale,
+			"stale_after_s":      builderStaleAfter.Seconds(),
+		}
+	}
+
+	snap := s.appState.RiskSnapshot()
+	usagePct := 0.0
+	remainingUSDC := 0.0
+	remainingPct := 0.0
+	blockedReasons := make([]string, 0, 3)
+	if snap.EmergencyStop {
+		blockedReasons = append(blockedReasons, "emergency_stop")
+	}
+	if snap.DailyLossLimitUSDC > 0 {
+		usagePct = (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
+		if usagePct < 0 {
+			usagePct = 0
+		}
+		remainingUSDC = snap.DailyLossLimitUSDC + snap.DailyPnL
+		if remainingUSDC < 0 {
+			remainingUSDC = 0
+		}
+		remainingPct = 100 - usagePct
+		if remainingPct < 0 {
+			remainingPct = 0
+		}
+		if snap.DailyPnL <= -snap.DailyLossLimitUSDC {
+			blockedReasons = append(blockedReasons, "daily_loss_limit_reached")
+		}
+	}
+	if snap.InCooldown {
+		blockedReasons = append(blockedReasons, "loss_cooldown_active")
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at": time.Now().UTC(),
+		"trading_mode": mode,
+		"performance": map[string]interface{}{
+			"fills":                   fills,
+			"realized_pnl_usdc":       realized,
+			"unrealized_pnl_usdc":     unrealized,
+			"total_pnl_usdc":          total,
+			"fees_paid_usdc":          fees,
+			"net_pnl_after_fees_usdc": total - fees,
+			"estimated_equity_usdc":   estimatedEquity,
+		},
+		"builder": builderData,
+		"risk": map[string]interface{}{
+			"emergency_stop":            snap.EmergencyStop,
+			"daily_pnl":                 snap.DailyPnL,
+			"daily_loss_limit_usdc":     snap.DailyLossLimitUSDC,
+			"daily_loss_used_pct":       usagePct,
+			"daily_loss_remaining_usdc": remainingUSDC,
+			"daily_loss_remaining_pct":  remainingPct,
+			"can_trade":                 len(blockedReasons) == 0,
+			"blocked_reasons":           blockedReasons,
+			"consecutive_losses":        snap.ConsecutiveLosses,
+			"max_consecutive_losses":    snap.MaxConsecutiveLosses,
+			"in_cooldown":               snap.InCooldown,
+			"cooldown_remaining_s":      snap.CooldownRemaining.Seconds(),
+		},
 	})
 }
 

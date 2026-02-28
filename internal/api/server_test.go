@@ -234,6 +234,77 @@ func TestHandlePerfLive(t *testing.T) {
 	}
 }
 
+func TestHandleGrantReport(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       3,
+		pnl:         1.2,
+		unrealPnL:   -0.2,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -5,
+			DailyLossLimitUSDC:   20,
+			ConsecutiveLosses:    1,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			InitialBalanceUSDC: 1000,
+			FeesPaidUSDC:       0.1,
+		},
+	}
+	builder := &mockBuilder{
+		lastSync:    time.Now().Add(-5 * time.Minute),
+		dailyVolume: []string{"v1", "v2", "v3"},
+		leaderboard: []string{"l1"},
+	}
+	s := NewServer(":0", state, nil, builder)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/grant-report", nil)
+	w := httptest.NewRecorder()
+	s.handleGrantReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["generated_at"] == nil {
+		t.Fatal("expected generated_at")
+	}
+	if resp["trading_mode"] != "paper" {
+		t.Fatalf("expected trading_mode paper, got %v", resp["trading_mode"])
+	}
+
+	perf, ok := resp["performance"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected performance object, got %T", resp["performance"])
+	}
+	if int(perf["fills"].(float64)) != 3 {
+		t.Fatalf("expected performance.fills=3, got %v", perf["fills"])
+	}
+
+	builderObj, ok := resp["builder"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected builder object, got %T", resp["builder"])
+	}
+	if builderObj["configured"] != true {
+		t.Fatalf("expected builder.configured=true, got %v", builderObj["configured"])
+	}
+	if int(builderObj["daily_volume_count"].(float64)) != 3 {
+		t.Fatalf("expected builder.daily_volume_count=3, got %v", builderObj["daily_volume_count"])
+	}
+
+	riskObj, ok := resp["risk"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected risk object, got %T", resp["risk"])
+	}
+	if riskObj["can_trade"] != true {
+		t.Fatalf("expected risk.can_trade=true, got %v", riskObj["can_trade"])
+	}
+}
+
 func TestHandleTrades(t *testing.T) {
 	state := &mockAppState{
 		recentFills: []execution.Fill{
