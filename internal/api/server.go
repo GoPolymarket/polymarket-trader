@@ -327,9 +327,21 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, r *http.Request) {
 		blockedReasons = append(blockedReasons, "loss_cooldown_active")
 	}
 	canTrade := len(blockedReasons) == 0
+	builderFresh := builderConfigured && !builderNeverSynced && !builderStale
+	hasTradingActivity := fills > 0
+	readinessScore := 0
+	if builderFresh {
+		readinessScore += 40
+	}
+	if canTrade {
+		readinessScore += 30
+	}
+	if hasTradingActivity {
+		readinessScore += 30
+	}
 
 	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "csv") {
-		s.writeGrantReportCSV(w, generatedAt, mode, fills, realized, unrealized, total, fees, estimatedEquity, builderConfigured, builderDailyVolumeCount, builderLeaderboardCount, builderLastSyncAgeSeconds, builderNeverSynced, builderStale, canTrade, snap.DailyPnL, usagePct, snap.ConsecutiveLosses, snap.InCooldown, blockedReasons)
+		s.writeGrantReportCSV(w, generatedAt, mode, fills, realized, unrealized, total, fees, estimatedEquity, builderConfigured, builderDailyVolumeCount, builderLeaderboardCount, builderLastSyncAgeSeconds, builderNeverSynced, builderStale, canTrade, snap.DailyPnL, usagePct, snap.ConsecutiveLosses, snap.InCooldown, blockedReasons, builderFresh, hasTradingActivity, readinessScore)
 		return
 	}
 
@@ -360,6 +372,12 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, r *http.Request) {
 			"in_cooldown":               snap.InCooldown,
 			"cooldown_remaining_s":      snap.CooldownRemaining.Seconds(),
 		},
+		"readiness": map[string]interface{}{
+			"builder_fresh":        builderFresh,
+			"risk_tradable":        canTrade,
+			"has_trading_activity": hasTradingActivity,
+			"score":                readinessScore,
+		},
 	})
 }
 
@@ -385,6 +403,9 @@ func (s *Server) writeGrantReportCSV(
 	consecutiveLosses int,
 	inCooldown bool,
 	blockedReasons []string,
+	builderFresh bool,
+	hasTradingActivity bool,
+	readinessScore int,
 ) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	cw := csv.NewWriter(w)
@@ -410,6 +431,10 @@ func (s *Server) writeGrantReportCSV(
 		"risk_consecutive_losses",
 		"risk_in_cooldown",
 		"risk_blocked_reasons",
+		"readiness_builder_fresh",
+		"readiness_risk_tradable",
+		"readiness_has_trading_activity",
+		"readiness_score",
 	}
 	record := []string{
 		generatedAt.Format(time.RFC3339),
@@ -433,6 +458,10 @@ func (s *Server) writeGrantReportCSV(
 		strconv.Itoa(consecutiveLosses),
 		strconv.FormatBool(inCooldown),
 		strings.Join(blockedReasons, ";"),
+		strconv.FormatBool(builderFresh),
+		strconv.FormatBool(canTrade),
+		strconv.FormatBool(hasTradingActivity),
+		strconv.Itoa(readinessScore),
 	}
 	if err := cw.Write(header); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

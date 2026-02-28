@@ -305,6 +305,23 @@ func TestHandleGrantReport(t *testing.T) {
 	if riskObj["can_trade"] != true {
 		t.Fatalf("expected risk.can_trade=true, got %v", riskObj["can_trade"])
 	}
+
+	readiness, ok := resp["readiness"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected readiness object, got %T", resp["readiness"])
+	}
+	if readiness["builder_fresh"] != true {
+		t.Fatalf("expected readiness.builder_fresh=true, got %v", readiness["builder_fresh"])
+	}
+	if readiness["risk_tradable"] != true {
+		t.Fatalf("expected readiness.risk_tradable=true, got %v", readiness["risk_tradable"])
+	}
+	if readiness["has_trading_activity"] != true {
+		t.Fatalf("expected readiness.has_trading_activity=true, got %v", readiness["has_trading_activity"])
+	}
+	if int(readiness["score"].(float64)) != 100 {
+		t.Fatalf("expected readiness.score=100, got %v", readiness["score"])
+	}
 }
 
 func TestHandleGrantReportCSV(t *testing.T) {
@@ -368,6 +385,9 @@ func TestHandleGrantReportCSV(t *testing.T) {
 	}
 	if col["risk_can_trade"] != "true" {
 		t.Fatalf("expected risk_can_trade=true, got %q", col["risk_can_trade"])
+	}
+	if col["readiness_score"] != "100" {
+		t.Fatalf("expected readiness_score=100, got %q", col["readiness_score"])
 	}
 }
 
