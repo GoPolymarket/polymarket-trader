@@ -295,6 +295,55 @@ func TestHandleRisk(t *testing.T) {
 	if resp["in_cooldown"].(bool) != true {
 		t.Fatalf("expected in_cooldown=true, got %v", resp["in_cooldown"])
 	}
+	if resp["can_trade"].(bool) != false {
+		t.Fatalf("expected can_trade=false, got %v", resp["can_trade"])
+	}
+	reasons, ok := resp["blocked_reasons"].([]interface{})
+	if !ok {
+		t.Fatalf("expected blocked_reasons array, got %T", resp["blocked_reasons"])
+	}
+	if len(reasons) != 1 || reasons[0] != "loss_cooldown_active" {
+		t.Fatalf("expected blocked_reasons=[loss_cooldown_active], got %v", reasons)
+	}
+}
+
+func TestHandleRiskBlockedReasonsMultiple(t *testing.T) {
+	state := &mockAppState{
+		riskSnapshot: risk.Snapshot{
+			EmergencyStop:      true,
+			DailyPnL:           -25,
+			DailyLossLimitUSDC: 20,
+			InCooldown:         true,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/risk", nil)
+	w := httptest.NewRecorder()
+	s.handleRisk(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp["can_trade"].(bool) != false {
+		t.Fatalf("expected can_trade=false, got %v", resp["can_trade"])
+	}
+	reasons, ok := resp["blocked_reasons"].([]interface{})
+	if !ok {
+		t.Fatalf("expected blocked_reasons array, got %T", resp["blocked_reasons"])
+	}
+	if len(reasons) != 3 {
+		t.Fatalf("expected 3 blocked reasons, got %v", reasons)
+	}
+	if reasons[0] != "emergency_stop" || reasons[1] != "daily_loss_limit_reached" || reasons[2] != "loss_cooldown_active" {
+		t.Fatalf("unexpected blocked_reasons order/content: %v", reasons)
+	}
 }
 
 func TestHandlePaper(t *testing.T) {

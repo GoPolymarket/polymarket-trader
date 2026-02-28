@@ -254,6 +254,10 @@ func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 	usagePct := 0.0
 	remainingUSDC := 0.0
 	remainingPct := 0.0
+	blockedReasons := make([]string, 0, 3)
+	if snap.EmergencyStop {
+		blockedReasons = append(blockedReasons, "emergency_stop")
+	}
 	if snap.DailyLossLimitUSDC > 0 {
 		usagePct = (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
 		if usagePct < 0 {
@@ -267,6 +271,12 @@ func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 		if remainingPct < 0 {
 			remainingPct = 0
 		}
+		if snap.DailyPnL <= -snap.DailyLossLimitUSDC {
+			blockedReasons = append(blockedReasons, "daily_loss_limit_reached")
+		}
+	}
+	if snap.InCooldown {
+		blockedReasons = append(blockedReasons, "loss_cooldown_active")
 	}
 	s.writeJSON(w, map[string]interface{}{
 		"emergency_stop":            snap.EmergencyStop,
@@ -275,6 +285,8 @@ func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 		"daily_loss_used_pct":       usagePct,
 		"daily_loss_remaining_usdc": remainingUSDC,
 		"daily_loss_remaining_pct":  remainingPct,
+		"can_trade":                 len(blockedReasons) == 0,
+		"blocked_reasons":           blockedReasons,
 		"consecutive_losses":        snap.ConsecutiveLosses,
 		"max_consecutive_losses":    snap.MaxConsecutiveLosses,
 		"in_cooldown":               snap.InCooldown,
