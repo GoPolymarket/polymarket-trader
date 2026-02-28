@@ -950,6 +950,17 @@ type executionQualityMetrics struct {
 	QualityScore        float64 `json:"quality_score"`
 }
 
+type executionLossBreakdown struct {
+	FeeDragBps          float64 `json:"fee_drag_bps"`
+	SlippageProxyBps    float64 `json:"slippage_proxy_bps"`
+	SelectivityLossBps  float64 `json:"selectivity_loss_bps"`
+	AvoidableLossBps    float64 `json:"avoidable_loss_bps"`
+	TotalLossBps        float64 `json:"total_loss_bps"`
+	FeeSharePct         float64 `json:"fee_share_pct"`
+	SlippageSharePct    float64 `json:"slippage_share_pct"`
+	SelectivitySharePct float64 `json:"selectivity_share_pct"`
+}
+
 func sumFillNotional(fills []execution.Fill) float64 {
 	total := 0.0
 	for _, f := range fills {
@@ -1039,10 +1050,53 @@ func calculateExecutionQualityMetrics(
 	}
 }
 
+func calculateExecutionLossBreakdown(metrics executionQualityMetrics) executionLossBreakdown {
+	slippage := (100 - metrics.QualityScore) / 20
+	switch {
+	case metrics.AvgFillNotionalUSDC <= 0:
+		slippage += 2
+	case metrics.AvgFillNotionalUSDC < 10:
+		slippage += 1
+	}
+	if metrics.Fills < 10 {
+		slippage += 0.5
+	}
+	slippage = round2(clamp(slippage, 0, 12))
+
+	selectivity := 0.0
+	if metrics.NetEdgeBps < 0 {
+		selectivity = round2(-metrics.NetEdgeBps)
+	}
+
+	feeDrag := round2(metrics.FeeRateBps)
+	avoidable := round2(slippage + selectivity)
+	total := round2(feeDrag + avoidable)
+	feeShare := 0.0
+	slippageShare := 0.0
+	selectivityShare := 0.0
+	if total > 0 {
+		feeShare = round2((feeDrag / total) * 100)
+		slippageShare = round2((slippage / total) * 100)
+		selectivityShare = round2((selectivity / total) * 100)
+	}
+
+	return executionLossBreakdown{
+		FeeDragBps:          feeDrag,
+		SlippageProxyBps:    slippage,
+		SelectivityLossBps:  selectivity,
+		AvoidableLossBps:    avoidable,
+		TotalLossBps:        total,
+		FeeSharePct:         feeShare,
+		SlippageSharePct:    slippageShare,
+		SelectivitySharePct: selectivityShare,
+	}
+}
+
 func buildExecutionQualityRecommendations(
 	canTrade bool,
 	blockedReasons []string,
 	metrics executionQualityMetrics,
+	breakdown executionLossBreakdown,
 ) []coachAction {
 	recs := make([]coachAction, 0, 6)
 	if !canTrade {
@@ -1064,6 +1118,20 @@ func buildExecutionQualityRecommendations(
 			Code:     "reduce_churn",
 			Severity: "warn",
 			Message:  "Execution costs consume gross edge; reduce turnover and be more selective.",
+		})
+	}
+	if breakdown.FeeDragBps >= 20 {
+		recs = append(recs, coachAction{
+			Code:     "reduce_fee_drag",
+			Severity: "warn",
+			Message:  "Fee drag is high; prioritize lower-cost execution paths.",
+		})
+	}
+	if breakdown.SlippageProxyBps >= 3 {
+		recs = append(recs, coachAction{
+			Code:     "reduce_slippage",
+			Severity: "warn",
+			Message:  "Slippage proxy is elevated; prefer tighter quotes and smaller clips.",
 		})
 	}
 	if metrics.NetEdgeBps <= 0 && metrics.Fills >= 10 {
@@ -1292,7 +1360,8 @@ func buildDailyReportActions(
 	scores []marketScore,
 ) []coachAction {
 	actions := make([]coachAction, 0, 10)
-	actions = append(actions, buildExecutionQualityRecommendations(rs.canTrade, rs.blockedReasons, metrics)...)
+	breakdown := calculateExecutionLossBreakdown(metrics)
+	actions = append(actions, buildExecutionQualityRecommendations(rs.canTrade, rs.blockedReasons, metrics, breakdown)...)
 
 	if len(scores) > 0 {
 		top := scores[0]
@@ -2017,10 +2086,12 @@ func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) 
 		s.appState.PaperSnapshot(),
 		recentFills,
 	)
+	breakdown := calculateExecutionLossBreakdown(metrics)
 	recommendations := buildExecutionQualityRecommendations(
 		rs.canTrade,
 		rs.blockedReasons,
 		metrics,
+		breakdown,
 	)
 
 	s.writeJSON(w, map[string]interface{}{
@@ -2029,6 +2100,7 @@ func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) 
 		"can_trade":       rs.canTrade,
 		"blocked_reasons": rs.blockedReasons,
 		"metrics":         metrics,
+		"breakdown":       breakdown,
 		"recommendations": recommendations,
 	})
 }

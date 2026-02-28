@@ -1330,6 +1330,19 @@ func TestHandleExecutionQualityPaper(t *testing.T) {
 	if !approxEqual(metrics["avg_fill_notional_usdc"].(float64), 7.5) {
 		t.Fatalf("expected avg_fill_notional_usdc=7.5, got %v", metrics["avg_fill_notional_usdc"])
 	}
+	breakdown, ok := resp["breakdown"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected breakdown object, got %T", resp["breakdown"])
+	}
+	if !approxEqual(breakdown["fee_drag_bps"].(float64), 25.0) {
+		t.Fatalf("expected fee_drag_bps=25, got %v", breakdown["fee_drag_bps"])
+	}
+	if !approxEqual(breakdown["slippage_proxy_bps"].(float64), 2.0) {
+		t.Fatalf("expected slippage_proxy_bps=2, got %v", breakdown["slippage_proxy_bps"])
+	}
+	if !approxEqual(breakdown["selectivity_loss_bps"].(float64), 0.0) {
+		t.Fatalf("expected selectivity_loss_bps=0, got %v", breakdown["selectivity_loss_bps"])
+	}
 
 	recs, ok := resp["recommendations"].([]interface{})
 	if !ok {
@@ -1374,6 +1387,16 @@ func TestHandleExecutionQualityLowEdge(t *testing.T) {
 	if metrics["net_edge_bps"].(float64) >= 0 {
 		t.Fatalf("expected negative net_edge_bps, got %v", metrics["net_edge_bps"])
 	}
+	breakdown, ok := resp["breakdown"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected breakdown object, got %T", resp["breakdown"])
+	}
+	if !approxEqual(breakdown["selectivity_loss_bps"].(float64), 4.0) {
+		t.Fatalf("expected selectivity_loss_bps=4, got %v", breakdown["selectivity_loss_bps"])
+	}
+	if !approxEqual(breakdown["slippage_proxy_bps"].(float64), 4.25) {
+		t.Fatalf("expected slippage_proxy_bps=4.25, got %v", breakdown["slippage_proxy_bps"])
+	}
 
 	recs, ok := resp["recommendations"].([]interface{})
 	if !ok {
@@ -1384,6 +1407,9 @@ func TestHandleExecutionQualityLowEdge(t *testing.T) {
 	}
 	if !containsActionCode(recs, "improve_selectivity") {
 		t.Fatalf("expected improve_selectivity recommendation, got %v", recs)
+	}
+	if !containsActionCode(recs, "reduce_slippage") {
+		t.Fatalf("expected reduce_slippage recommendation, got %v", recs)
 	}
 }
 
