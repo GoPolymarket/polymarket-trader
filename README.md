@@ -115,25 +115,25 @@ Startup performs config validation and exits fast on invalid critical values (mo
 | **Maker** | | | |
 | `maker.enabled` | bool | `true` | Enable market making |
 | `maker.markets` | []string | `[]` | Token IDs to trade (empty = auto-select) |
-| `maker.auto_select_top` | int | `5` | Number of markets to auto-select |
+| `maker.auto_select_top` | int | `2` | Number of markets to auto-select |
 | `maker.min_spread_bps` | float | `20` | Minimum spread in basis points |
 | `maker.spread_multiplier` | float | `1.5` | Multiplier applied to market spread |
-| `maker.order_size_usdc` | float | `25` | Order size in USDC |
+| `maker.order_size_usdc` | float | `1` | Order size in USDC |
 | `maker.refresh_interval` | duration | `5s` | Quote refresh interval |
 | `maker.max_orders_per_market` | int | `2` | Max orders per market |
 | **Taker** | | | |
 | `taker.enabled` | bool | `true` | Enable taker strategy |
 | `taker.min_imbalance` | float | `0.15` | Minimum bid/ask imbalance to trigger |
 | `taker.depth_levels` | int | `3` | Book depth levels to analyze |
-| `taker.amount_usdc` | float | `20` | Trade size in USDC |
+| `taker.amount_usdc` | float | `1` | Trade size in USDC |
 | `taker.max_slippage_bps` | float | `30` | Max slippage in basis points |
 | `taker.cooldown` | duration | `60s` | Cooldown between trades per market |
 | **Risk** | | | |
-| `risk.max_open_orders` | int | `20` | Maximum concurrent open orders |
+| `risk.max_open_orders` | int | `6` | Maximum concurrent open orders |
 | `risk.max_daily_loss_usdc` | float | `0` | Optional fixed daily loss cap (0 disables fixed cap) |
 | `risk.max_daily_loss_pct` | float | `0.02` | Daily loss cap as a fraction of account capital |
 | `risk.account_capital_usdc` | float | `1000` | Baseline capital used for percentage-based limits |
-| `risk.max_position_per_market` | float | `50` | Max USDC exposure per market |
+| `risk.max_position_per_market` | float | `3` | Max USDC exposure per market |
 | `risk.max_consecutive_losses` | int | `3` | Consecutive realized losing trades before cooldown |
 | `risk.consecutive_loss_cooldown` | duration | `30m` | Cooldown window after max consecutive losses |
 | **Paper** | | | |
