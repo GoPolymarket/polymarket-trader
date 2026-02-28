@@ -1,9 +1,11 @@
 package api
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -302,6 +304,70 @@ func TestHandleGrantReport(t *testing.T) {
 	}
 	if riskObj["can_trade"] != true {
 		t.Fatalf("expected risk.can_trade=true, got %v", riskObj["can_trade"])
+	}
+}
+
+func TestHandleGrantReportCSV(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       2,
+		pnl:         1.0,
+		unrealPnL:   0.5,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -1,
+			DailyLossLimitUSDC: 20,
+		},
+		paperSnapshot: paper.Snapshot{
+			InitialBalanceUSDC: 1000,
+			FeesPaidUSDC:       0.1,
+		},
+	}
+	builder := &mockBuilder{
+		lastSync:    time.Now().Add(-2 * time.Minute),
+		dailyVolume: []string{"v1"},
+		leaderboard: []string{"l1"},
+	}
+	s := NewServer(":0", state, nil, builder)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/grant-report?format=csv", nil)
+	w := httptest.NewRecorder()
+	s.handleGrantReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/csv") {
+		t.Fatalf("expected text/csv content type, got %q", got)
+	}
+
+	rows, err := csv.NewReader(w.Body).ReadAll()
+	if err != nil {
+		t.Fatalf("read csv: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 csv rows (header+data), got %d", len(rows))
+	}
+	header := rows[0]
+	row := rows[1]
+	if len(header) != len(row) {
+		t.Fatalf("csv header/data length mismatch: %d vs %d", len(header), len(row))
+	}
+
+	col := make(map[string]string, len(header))
+	for i, k := range header {
+		col[k] = row[i]
+	}
+	if col["trading_mode"] != "paper" {
+		t.Fatalf("expected trading_mode=paper, got %q", col["trading_mode"])
+	}
+	if col["fills"] != "2" {
+		t.Fatalf("expected fills=2, got %q", col["fills"])
+	}
+	if col["builder_daily_volume_count"] != "1" {
+		t.Fatalf("expected builder_daily_volume_count=1, got %q", col["builder_daily_volume_count"])
+	}
+	if col["risk_can_trade"] != "true" {
+		t.Fatalf("expected risk_can_trade=true, got %q", col["risk_can_trade"])
 	}
 }
 

@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/GoPolymarket/polymarket-trader/internal/execution"
@@ -233,7 +236,8 @@ func (s *Server) handlePerf(w http.ResponseWriter, _ *http.Request) {
 }
 
 // GET /api/grant-report — aggregated metrics for builder/grant review.
-func (s *Server) handleGrantReport(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGrantReport(w http.ResponseWriter, r *http.Request) {
+	generatedAt := time.Now().UTC()
 	_, fills, realized := s.appState.Stats()
 	unrealized := s.appState.UnrealizedPnL()
 	total := realized + unrealized
@@ -246,39 +250,50 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, _ *http.Request) {
 		estimatedEquity = paperSnap.InitialBalanceUSDC + total - fees
 	}
 
+	builderConfigured := false
+	builderDailyVolumeCount := 0
+	builderLeaderboardCount := 0
+	var builderLastSync interface{}
+	var builderLastSyncAgeSeconds interface{}
+	builderNeverSynced := true
+	builderStale := false
 	builderData := map[string]interface{}{
-		"configured":         false,
-		"daily_volume_count": 0,
-		"leaderboard_count":  0,
-		"last_sync":          nil,
-		"last_sync_age_s":    nil,
-		"never_synced":       true,
-		"stale":              false,
+		"configured":         builderConfigured,
+		"daily_volume_count": builderDailyVolumeCount,
+		"leaderboard_count":  builderLeaderboardCount,
+		"last_sync":          builderLastSync,
+		"last_sync_age_s":    builderLastSyncAgeSeconds,
+		"never_synced":       builderNeverSynced,
+		"stale":              builderStale,
 		"stale_after_s":      builderStaleAfter.Seconds(),
 	}
 	if s.builder != nil {
 		dailyVolume := s.builder.DailyVolumeJSON()
 		leaderboard := s.builder.LeaderboardJSON()
 		lastSync := s.builder.LastSync()
-		neverSynced := lastSync.IsZero()
-		var ageSeconds interface{}
-		stale := neverSynced
-		if !neverSynced {
+		builderConfigured = true
+		builderDailyVolumeCount = countEntries(dailyVolume)
+		builderLeaderboardCount = countEntries(leaderboard)
+		builderLastSync = lastSync
+		builderNeverSynced = lastSync.IsZero()
+		builderStale = builderNeverSynced
+		builderLastSyncAgeSeconds = nil
+		if !builderNeverSynced {
 			age := time.Since(lastSync)
 			if age < 0 {
 				age = 0
 			}
-			ageSeconds = age.Seconds()
-			stale = age > builderStaleAfter
+			builderLastSyncAgeSeconds = age.Seconds()
+			builderStale = age > builderStaleAfter
 		}
 		builderData = map[string]interface{}{
-			"configured":         true,
-			"daily_volume_count": countEntries(dailyVolume),
-			"leaderboard_count":  countEntries(leaderboard),
-			"last_sync":          lastSync,
-			"last_sync_age_s":    ageSeconds,
-			"never_synced":       neverSynced,
-			"stale":              stale,
+			"configured":         builderConfigured,
+			"daily_volume_count": builderDailyVolumeCount,
+			"leaderboard_count":  builderLeaderboardCount,
+			"last_sync":          builderLastSync,
+			"last_sync_age_s":    builderLastSyncAgeSeconds,
+			"never_synced":       builderNeverSynced,
+			"stale":              builderStale,
 			"stale_after_s":      builderStaleAfter.Seconds(),
 		}
 	}
@@ -311,9 +326,15 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, _ *http.Request) {
 	if snap.InCooldown {
 		blockedReasons = append(blockedReasons, "loss_cooldown_active")
 	}
+	canTrade := len(blockedReasons) == 0
+
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "csv") {
+		s.writeGrantReportCSV(w, generatedAt, mode, fills, realized, unrealized, total, fees, estimatedEquity, builderConfigured, builderDailyVolumeCount, builderLeaderboardCount, builderLastSyncAgeSeconds, builderNeverSynced, builderStale, canTrade, snap.DailyPnL, usagePct, snap.ConsecutiveLosses, snap.InCooldown, blockedReasons)
+		return
+	}
 
 	s.writeJSON(w, map[string]interface{}{
-		"generated_at": time.Now().UTC(),
+		"generated_at": generatedAt,
 		"trading_mode": mode,
 		"performance": map[string]interface{}{
 			"fills":                   fills,
@@ -332,7 +353,7 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, _ *http.Request) {
 			"daily_loss_used_pct":       usagePct,
 			"daily_loss_remaining_usdc": remainingUSDC,
 			"daily_loss_remaining_pct":  remainingPct,
-			"can_trade":                 len(blockedReasons) == 0,
+			"can_trade":                 canTrade,
 			"blocked_reasons":           blockedReasons,
 			"consecutive_losses":        snap.ConsecutiveLosses,
 			"max_consecutive_losses":    snap.MaxConsecutiveLosses,
@@ -340,6 +361,108 @@ func (s *Server) handleGrantReport(w http.ResponseWriter, _ *http.Request) {
 			"cooldown_remaining_s":      snap.CooldownRemaining.Seconds(),
 		},
 	})
+}
+
+func (s *Server) writeGrantReportCSV(
+	w http.ResponseWriter,
+	generatedAt time.Time,
+	mode string,
+	fills int,
+	realized float64,
+	unrealized float64,
+	total float64,
+	fees float64,
+	estimatedEquity interface{},
+	builderConfigured bool,
+	builderDailyVolumeCount int,
+	builderLeaderboardCount int,
+	builderLastSyncAgeSeconds interface{},
+	builderNeverSynced bool,
+	builderStale bool,
+	canTrade bool,
+	dailyPnL float64,
+	dailyLossUsedPct float64,
+	consecutiveLosses int,
+	inCooldown bool,
+	blockedReasons []string,
+) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	cw := csv.NewWriter(w)
+	header := []string{
+		"generated_at",
+		"trading_mode",
+		"fills",
+		"realized_pnl_usdc",
+		"unrealized_pnl_usdc",
+		"total_pnl_usdc",
+		"fees_paid_usdc",
+		"net_pnl_after_fees_usdc",
+		"estimated_equity_usdc",
+		"builder_configured",
+		"builder_daily_volume_count",
+		"builder_leaderboard_count",
+		"builder_last_sync_age_s",
+		"builder_never_synced",
+		"builder_stale",
+		"risk_can_trade",
+		"risk_daily_pnl",
+		"risk_daily_loss_used_pct",
+		"risk_consecutive_losses",
+		"risk_in_cooldown",
+		"risk_blocked_reasons",
+	}
+	record := []string{
+		generatedAt.Format(time.RFC3339),
+		mode,
+		strconv.Itoa(fills),
+		fmt.Sprintf("%.6f", realized),
+		fmt.Sprintf("%.6f", unrealized),
+		fmt.Sprintf("%.6f", total),
+		fmt.Sprintf("%.6f", fees),
+		fmt.Sprintf("%.6f", total-fees),
+		formatCSVNumber(estimatedEquity),
+		strconv.FormatBool(builderConfigured),
+		strconv.Itoa(builderDailyVolumeCount),
+		strconv.Itoa(builderLeaderboardCount),
+		formatCSVNumber(builderLastSyncAgeSeconds),
+		strconv.FormatBool(builderNeverSynced),
+		strconv.FormatBool(builderStale),
+		strconv.FormatBool(canTrade),
+		fmt.Sprintf("%.6f", dailyPnL),
+		fmt.Sprintf("%.6f", dailyLossUsedPct),
+		strconv.Itoa(consecutiveLosses),
+		strconv.FormatBool(inCooldown),
+		strings.Join(blockedReasons, ";"),
+	}
+	if err := cw.Write(header); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := cw.Write(record); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func formatCSVNumber(v interface{}) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case float64:
+		return fmt.Sprintf("%.6f", t)
+	case float32:
+		return fmt.Sprintf("%.6f", t)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	default:
+		return fmt.Sprintf("%v", t)
+	}
 }
 
 // GET /api/trades?limit=50 — recent trade fills.
