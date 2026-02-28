@@ -1180,6 +1180,22 @@ func calcReadinessScore(builderFresh, canTrade, hasTradingActivity bool) int {
 	return score
 }
 
+type stageWindow struct {
+	label string
+	days  int
+}
+
+func parseStageWindow(raw string) stageWindow {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "30", "30d", "30day", "30days":
+		return stageWindow{label: "30d", days: 30}
+	case "7", "7d", "7day", "7days", "":
+		return stageWindow{label: "7d", days: 7}
+	default:
+		return stageWindow{label: "7d", days: 7}
+	}
+}
+
 func buildStageNarrative(
 	builder builderStatus,
 	rs riskStatus,
@@ -1220,6 +1236,7 @@ func buildStageNarrative(
 func renderStageReportMarkdown(
 	generatedAt time.Time,
 	tradingMode string,
+	windowLabel string,
 	grantReadinessScore int,
 	readinessScore int,
 	qualityScore float64,
@@ -1237,6 +1254,7 @@ func renderStageReportMarkdown(
 	b.WriteString("# Polymarket Trader Stage Report\n\n")
 	b.WriteString(fmt.Sprintf("- Generated At (UTC): %s\n", generatedAt.Format(time.RFC3339)))
 	b.WriteString(fmt.Sprintf("- Trading Mode: %s\n", tradingMode))
+	b.WriteString(fmt.Sprintf("- Window: %s\n", windowLabel))
 	b.WriteString(fmt.Sprintf("- Grant Readiness Score: %d\n", grantReadinessScore))
 	b.WriteString(fmt.Sprintf("- Readiness Score: %d\n", readinessScore))
 	b.WriteString(fmt.Sprintf("- Execution Quality Score: %.2f\n\n", qualityScore))
@@ -1272,6 +1290,76 @@ func renderStageReportMarkdown(
 		b.WriteString("- Keep current plan and continue monitoring.\n")
 	}
 	return b.String()
+}
+
+func (s *Server) writeStageReportCSV(
+	w http.ResponseWriter,
+	generatedAt time.Time,
+	mode string,
+	window stageWindow,
+	grantReadinessScore int,
+	readinessScore int,
+	qualityScore float64,
+	fills int,
+	totalPnL float64,
+	netPnLAfterFees float64,
+	netEdgeBps float64,
+	feeRateBps float64,
+	builderFresh bool,
+	riskTradable bool,
+	hasTradingActivity bool,
+	actionsCount int,
+) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	cw := csv.NewWriter(w)
+	header := []string{
+		"generated_at",
+		"window_label",
+		"window_days",
+		"trading_mode",
+		"grant_readiness_score",
+		"readiness_score",
+		"quality_score",
+		"fills",
+		"total_pnl_usdc",
+		"net_pnl_after_fees_usdc",
+		"net_edge_bps",
+		"fee_rate_bps",
+		"builder_fresh",
+		"risk_tradable",
+		"has_trading_activity",
+		"next_actions_count",
+	}
+	record := []string{
+		generatedAt.Format(time.RFC3339),
+		window.label,
+		strconv.Itoa(window.days),
+		mode,
+		strconv.Itoa(grantReadinessScore),
+		strconv.Itoa(readinessScore),
+		fmt.Sprintf("%.2f", qualityScore),
+		strconv.Itoa(fills),
+		fmt.Sprintf("%.6f", totalPnL),
+		fmt.Sprintf("%.6f", netPnLAfterFees),
+		fmt.Sprintf("%.6f", netEdgeBps),
+		fmt.Sprintf("%.6f", feeRateBps),
+		strconv.FormatBool(builderFresh),
+		strconv.FormatBool(riskTradable),
+		strconv.FormatBool(hasTradingActivity),
+		strconv.Itoa(actionsCount),
+	}
+	if err := cw.Write(header); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := cw.Write(record); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 // GET /api/risk — current risk guardrail status.
@@ -1591,6 +1679,7 @@ func (s *Server) handleDailyReport(w http.ResponseWriter, _ *http.Request) {
 // GET /api/stage-report — grant-facing evidence bundle for current stage.
 func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 	generatedAt := time.Now().UTC()
+	window := parseStageWindow(r.URL.Query().Get("window"))
 	mode := s.appState.TradingMode()
 	_, fills, realized := s.appState.Stats()
 	unrealized := s.appState.UnrealizedPnL()
@@ -1641,11 +1730,35 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 		scores,
 	)
 
-	if format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))); format == "markdown" || format == "md" {
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "csv" {
+		s.writeStageReportCSV(
+			w,
+			generatedAt,
+			mode,
+			window,
+			grantReadinessScore,
+			readinessScore,
+			metrics.QualityScore,
+			fills,
+			round2(totalPnL),
+			round2(metrics.NetPnLAfterFeesUSDC),
+			round2(metrics.NetEdgeBps),
+			round2(metrics.FeeRateBps),
+			builder.fresh,
+			rs.canTrade,
+			hasTradingActivity,
+			len(actions),
+		)
+		return
+	}
+
+	if format == "markdown" || format == "md" {
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		md := renderStageReportMarkdown(
 			generatedAt,
 			mode,
+			window.label,
 			grantReadinessScore,
 			readinessScore,
 			metrics.QualityScore,
@@ -1663,6 +1776,7 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, map[string]interface{}{
 		"generated_at":    generatedAt,
 		"trading_mode":    mode,
+		"window":          map[string]interface{}{"label": window.label, "days": window.days},
 		"can_trade":       rs.canTrade,
 		"blocked_reasons": rs.blockedReasons,
 		"scorecard": map[string]interface{}{

@@ -510,6 +510,110 @@ func TestHandleStageReportMarkdown(t *testing.T) {
 	}
 }
 
+func TestHandleStageReportWindowOverride(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       8,
+		pnl:         1.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -1,
+			DailyLossLimitUSDC: 20,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.1,
+			TotalVolumeUSDC: 80,
+			TotalTrades:     8,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stage-report?window=30d", nil)
+	w := httptest.NewRecorder()
+	s.handleStageReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	window, ok := resp["window"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected window object, got %T", resp["window"])
+	}
+	if window["label"] != "30d" {
+		t.Fatalf("expected window.label=30d, got %v", window["label"])
+	}
+	if int(window["days"].(float64)) != 30 {
+		t.Fatalf("expected window.days=30, got %v", window["days"])
+	}
+}
+
+func TestHandleStageReportCSV(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       10,
+		pnl:         2,
+		unrealPnL:   0.5,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -1,
+			DailyLossLimitUSDC: 20,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.2,
+			TotalVolumeUSDC: 150,
+			TotalTrades:     10,
+		},
+	}
+	builder := &mockBuilder{
+		lastSync:    time.Now().Add(-2 * time.Minute),
+		dailyVolume: []string{"v1"},
+		leaderboard: []string{"l1"},
+	}
+	s := NewServer(":0", state, nil, builder)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stage-report?format=csv&window=30d", nil)
+	w := httptest.NewRecorder()
+	s.handleStageReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/csv") {
+		t.Fatalf("expected text/csv content type, got %q", got)
+	}
+
+	rows, err := csv.NewReader(w.Body).ReadAll()
+	if err != nil {
+		t.Fatalf("read csv: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 csv rows, got %d", len(rows))
+	}
+	header := rows[0]
+	row := rows[1]
+	if len(header) != len(row) {
+		t.Fatalf("csv header/data mismatch: %d vs %d", len(header), len(row))
+	}
+	col := make(map[string]string, len(header))
+	for i, k := range header {
+		col[k] = row[i]
+	}
+	if col["window_days"] != "30" {
+		t.Fatalf("expected window_days=30, got %q", col["window_days"])
+	}
+	if col["trading_mode"] != "paper" {
+		t.Fatalf("expected trading_mode=paper, got %q", col["trading_mode"])
+	}
+	if col["builder_fresh"] != "true" {
+		t.Fatalf("expected builder_fresh=true, got %q", col["builder_fresh"])
+	}
+	if col["grant_readiness_score"] == "" {
+		t.Fatal("expected grant_readiness_score")
+	}
+}
+
 func TestHandleCoachNormal(t *testing.T) {
 	state := &mockAppState{
 		tradingMode: "paper",
