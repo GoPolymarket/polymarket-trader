@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -1185,6 +1187,12 @@ type stageWindow struct {
 	days  int
 }
 
+type stageEvidence struct {
+	ID                  string
+	ChecksumSHA256      string
+	ChecksumGeneratedAt time.Time
+}
+
 func parseStageWindow(raw string) stageWindow {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "30", "30d", "30day", "30days":
@@ -1193,6 +1201,50 @@ func parseStageWindow(raw string) stageWindow {
 		return stageWindow{label: "7d", days: 7}
 	default:
 		return stageWindow{label: "7d", days: 7}
+	}
+}
+
+func buildStageEvidence(
+	generatedAt time.Time,
+	mode string,
+	window stageWindow,
+	grantReadinessScore int,
+	readinessScore int,
+	qualityScore float64,
+	fills int,
+	totalPnL float64,
+	netPnLAfterFees float64,
+	netEdgeBps float64,
+	feeRateBps float64,
+	builderFresh bool,
+	riskTradable bool,
+	hasTradingActivity bool,
+) stageEvidence {
+	payload := strings.Join([]string{
+		"stage-report-v2",
+		generatedAt.UTC().Format(time.RFC3339),
+		mode,
+		window.label,
+		strconv.Itoa(window.days),
+		strconv.Itoa(grantReadinessScore),
+		strconv.Itoa(readinessScore),
+		fmt.Sprintf("%.6f", qualityScore),
+		strconv.Itoa(fills),
+		fmt.Sprintf("%.6f", totalPnL),
+		fmt.Sprintf("%.6f", netPnLAfterFees),
+		fmt.Sprintf("%.6f", netEdgeBps),
+		fmt.Sprintf("%.6f", feeRateBps),
+		strconv.FormatBool(builderFresh),
+		strconv.FormatBool(riskTradable),
+		strconv.FormatBool(hasTradingActivity),
+	}, "|")
+	sum := sha256.Sum256([]byte(payload))
+	checksum := hex.EncodeToString(sum[:])
+	id := fmt.Sprintf("stage-%s-%s-%s", window.label, generatedAt.UTC().Format("20060102T150405Z"), checksum[:12])
+	return stageEvidence{
+		ID:                  id,
+		ChecksumSHA256:      checksum,
+		ChecksumGeneratedAt: generatedAt.UTC(),
 	}
 }
 
@@ -1237,6 +1289,7 @@ func renderStageReportMarkdown(
 	generatedAt time.Time,
 	tradingMode string,
 	windowLabel string,
+	evidence stageEvidence,
 	grantReadinessScore int,
 	readinessScore int,
 	qualityScore float64,
@@ -1257,7 +1310,9 @@ func renderStageReportMarkdown(
 	b.WriteString(fmt.Sprintf("- Window: %s\n", windowLabel))
 	b.WriteString(fmt.Sprintf("- Grant Readiness Score: %d\n", grantReadinessScore))
 	b.WriteString(fmt.Sprintf("- Readiness Score: %d\n", readinessScore))
-	b.WriteString(fmt.Sprintf("- Execution Quality Score: %.2f\n\n", qualityScore))
+	b.WriteString(fmt.Sprintf("- Execution Quality Score: %.2f\n", qualityScore))
+	b.WriteString(fmt.Sprintf("- Evidence ID: %s\n", evidence.ID))
+	b.WriteString(fmt.Sprintf("- Checksum (SHA256): %s\n\n", evidence.ChecksumSHA256))
 
 	b.WriteString("## KPI Snapshot\n")
 	b.WriteString(fmt.Sprintf("- Fills: %v\n", kpis["fills"]))
@@ -1297,6 +1352,7 @@ func (s *Server) writeStageReportCSV(
 	generatedAt time.Time,
 	mode string,
 	window stageWindow,
+	evidence stageEvidence,
 	grantReadinessScore int,
 	readinessScore int,
 	qualityScore float64,
@@ -1317,6 +1373,9 @@ func (s *Server) writeStageReportCSV(
 		"window_label",
 		"window_days",
 		"trading_mode",
+		"evidence_id",
+		"checksum_sha256",
+		"checksum_generated_at",
 		"grant_readiness_score",
 		"readiness_score",
 		"quality_score",
@@ -1335,6 +1394,9 @@ func (s *Server) writeStageReportCSV(
 		window.label,
 		strconv.Itoa(window.days),
 		mode,
+		evidence.ID,
+		evidence.ChecksumSHA256,
+		evidence.ChecksumGeneratedAt.Format(time.RFC3339),
 		strconv.Itoa(grantReadinessScore),
 		strconv.Itoa(readinessScore),
 		fmt.Sprintf("%.2f", qualityScore),
@@ -1729,6 +1791,22 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 		metrics,
 		scores,
 	)
+	evidence := buildStageEvidence(
+		generatedAt,
+		mode,
+		window,
+		grantReadinessScore,
+		readinessScore,
+		metrics.QualityScore,
+		fills,
+		round2(totalPnL),
+		round2(metrics.NetPnLAfterFeesUSDC),
+		round2(metrics.NetEdgeBps),
+		round2(metrics.FeeRateBps),
+		builder.fresh,
+		rs.canTrade,
+		hasTradingActivity,
+	)
 
 	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
 	if format == "csv" {
@@ -1737,6 +1815,7 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 			generatedAt,
 			mode,
 			window,
+			evidence,
 			grantReadinessScore,
 			readinessScore,
 			metrics.QualityScore,
@@ -1759,6 +1838,7 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 			generatedAt,
 			mode,
 			window.label,
+			evidence,
 			grantReadinessScore,
 			readinessScore,
 			metrics.QualityScore,
@@ -1803,6 +1883,9 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 		},
 		"next_actions": actions,
 		"evidence": map[string]interface{}{
+			"evidence_id":           evidence.ID,
+			"checksum_sha256":       evidence.ChecksumSHA256,
+			"checksum_generated_at": evidence.ChecksumGeneratedAt,
 			"endpoints": []string{
 				"/api/grant-report",
 				"/api/coach",
@@ -1810,7 +1893,7 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 				"/api/execution-quality",
 				"/api/daily-report",
 			},
-			"version": "stage-report-v1",
+			"version": "stage-report-v2",
 		},
 	})
 }

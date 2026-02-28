@@ -471,6 +471,20 @@ func TestHandleStageReportJSON(t *testing.T) {
 	if !ok || len(strengths) == 0 {
 		t.Fatalf("expected non-empty strengths, got %v", narrative["strengths"])
 	}
+
+	evidence, ok := resp["evidence"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected evidence object, got %T", resp["evidence"])
+	}
+	if evidence["evidence_id"] == "" {
+		t.Fatal("expected evidence_id")
+	}
+	if evidence["checksum_sha256"] == "" {
+		t.Fatal("expected checksum_sha256")
+	}
+	if evidence["checksum_generated_at"] == nil {
+		t.Fatal("expected checksum_generated_at")
+	}
 }
 
 func TestHandleStageReportMarkdown(t *testing.T) {
@@ -507,6 +521,9 @@ func TestHandleStageReportMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(body, "Grant Readiness Score:") {
 		t.Fatalf("expected readiness line, got %q", body)
+	}
+	if !strings.Contains(body, "Evidence ID:") {
+		t.Fatalf("expected evidence id line, got %q", body)
 	}
 }
 
@@ -611,6 +628,12 @@ func TestHandleStageReportCSV(t *testing.T) {
 	}
 	if col["grant_readiness_score"] == "" {
 		t.Fatal("expected grant_readiness_score")
+	}
+	if col["evidence_id"] == "" {
+		t.Fatal("expected evidence_id")
+	}
+	if col["checksum_sha256"] == "" {
+		t.Fatal("expected checksum_sha256")
 	}
 }
 
