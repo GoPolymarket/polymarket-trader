@@ -286,6 +286,12 @@ func TestHandleRisk(t *testing.T) {
 	if resp["daily_loss_limit_usdc"].(float64) != 20 {
 		t.Fatalf("expected daily_loss_limit_usdc=20, got %v", resp["daily_loss_limit_usdc"])
 	}
+	if resp["daily_loss_remaining_usdc"].(float64) != 10 {
+		t.Fatalf("expected daily_loss_remaining_usdc=10, got %v", resp["daily_loss_remaining_usdc"])
+	}
+	if resp["daily_loss_remaining_pct"].(float64) != 50 {
+		t.Fatalf("expected daily_loss_remaining_pct=50, got %v", resp["daily_loss_remaining_pct"])
+	}
 	if resp["in_cooldown"].(bool) != true {
 		t.Fatalf("expected in_cooldown=true, got %v", resp["in_cooldown"])
 	}

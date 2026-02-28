@@ -252,21 +252,33 @@ func (s *Server) handleBuilder(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 	snap := s.appState.RiskSnapshot()
 	usagePct := 0.0
+	remainingUSDC := 0.0
+	remainingPct := 0.0
 	if snap.DailyLossLimitUSDC > 0 {
 		usagePct = (-snap.DailyPnL / snap.DailyLossLimitUSDC) * 100
 		if usagePct < 0 {
 			usagePct = 0
 		}
+		remainingUSDC = snap.DailyLossLimitUSDC + snap.DailyPnL
+		if remainingUSDC < 0 {
+			remainingUSDC = 0
+		}
+		remainingPct = 100 - usagePct
+		if remainingPct < 0 {
+			remainingPct = 0
+		}
 	}
 	s.writeJSON(w, map[string]interface{}{
-		"emergency_stop":         snap.EmergencyStop,
-		"daily_pnl":              snap.DailyPnL,
-		"daily_loss_limit_usdc":  snap.DailyLossLimitUSDC,
-		"daily_loss_used_pct":    usagePct,
-		"consecutive_losses":     snap.ConsecutiveLosses,
-		"max_consecutive_losses": snap.MaxConsecutiveLosses,
-		"in_cooldown":            snap.InCooldown,
-		"cooldown_remaining_s":   snap.CooldownRemaining.Seconds(),
+		"emergency_stop":            snap.EmergencyStop,
+		"daily_pnl":                 snap.DailyPnL,
+		"daily_loss_limit_usdc":     snap.DailyLossLimitUSDC,
+		"daily_loss_used_pct":       usagePct,
+		"daily_loss_remaining_usdc": remainingUSDC,
+		"daily_loss_remaining_pct":  remainingPct,
+		"consecutive_losses":        snap.ConsecutiveLosses,
+		"max_consecutive_losses":    snap.MaxConsecutiveLosses,
+		"in_cooldown":               snap.InCooldown,
+		"cooldown_remaining_s":      snap.CooldownRemaining.Seconds(),
 	})
 }
 

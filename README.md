@@ -187,7 +187,7 @@ An emergency stop flag can instantly halt all trading.
 If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/status`
 - `GET /api/pnl`
-- `GET /api/risk` (daily cap usage, cooldown state, loss streak)
+- `GET /api/risk` (daily cap usage + remaining headroom, cooldown state, loss streak)
 - `GET /api/paper` (paper balance, fees, shorting flag, inventory, realized/unrealized PnL, estimated equity)
 
 ## Docker Deployment
