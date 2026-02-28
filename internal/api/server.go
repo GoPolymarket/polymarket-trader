@@ -15,6 +15,8 @@ import (
 	"github.com/GoPolymarket/polymarket-trader/internal/risk"
 )
 
+const builderStaleAfter = 30 * time.Minute
+
 // AppState exposes the trading app's state for the API layer.
 type AppState interface {
 	Stats() (orders int, fills int, pnl float64)
@@ -245,15 +247,25 @@ func (s *Server) handleBuilder(w http.ResponseWriter, _ *http.Request) {
 			"daily_volume_count": 0,
 			"leaderboard_count":  0,
 			"last_sync_age_s":    nil,
+			"never_synced":       true,
+			"stale":              false,
+			"stale_after_s":      builderStaleAfter.Seconds(),
 		})
 		return
 	}
 	dailyVolume := s.builder.DailyVolumeJSON()
 	leaderboard := s.builder.LeaderboardJSON()
 	lastSync := s.builder.LastSync()
-	lastSyncAgeS := 0.0
-	if !lastSync.IsZero() {
-		lastSyncAgeS = time.Since(lastSync).Seconds()
+	neverSynced := lastSync.IsZero()
+	var lastSyncAgeS interface{}
+	stale := neverSynced
+	if !neverSynced {
+		age := time.Since(lastSync)
+		if age < 0 {
+			age = 0
+		}
+		lastSyncAgeS = age.Seconds()
+		stale = age > builderStaleAfter
 	}
 	s.writeJSON(w, map[string]interface{}{
 		"configured":         true,
@@ -263,6 +275,9 @@ func (s *Server) handleBuilder(w http.ResponseWriter, _ *http.Request) {
 		"leaderboard_count":  countEntries(leaderboard),
 		"last_sync":          lastSync,
 		"last_sync_age_s":    lastSyncAgeS,
+		"never_synced":       neverSynced,
+		"stale":              stale,
+		"stale_after_s":      builderStaleAfter.Seconds(),
 	})
 }
 

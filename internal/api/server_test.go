@@ -241,6 +241,15 @@ func TestHandleBuilder(t *testing.T) {
 	if resp["last_sync_age_s"] == nil {
 		t.Error("expected last_sync_age_s")
 	}
+	if resp["never_synced"] != false {
+		t.Errorf("expected never_synced=false, got %v", resp["never_synced"])
+	}
+	if resp["stale"] != false {
+		t.Errorf("expected stale=false, got %v", resp["stale"])
+	}
+	if int(resp["stale_after_s"].(float64)) != 1800 {
+		t.Errorf("expected stale_after_s=1800, got %v", resp["stale_after_s"])
+	}
 }
 
 func TestHandleBuilderNotConfigured(t *testing.T) {
@@ -266,6 +275,67 @@ func TestHandleBuilderNotConfigured(t *testing.T) {
 	if int(resp["leaderboard_count"].(float64)) != 0 {
 		t.Errorf("expected leaderboard_count=0, got %v", resp["leaderboard_count"])
 	}
+	if resp["never_synced"] != true {
+		t.Errorf("expected never_synced=true, got %v", resp["never_synced"])
+	}
+	if resp["stale"] != false {
+		t.Errorf("expected stale=false, got %v", resp["stale"])
+	}
+	if int(resp["stale_after_s"].(float64)) != 1800 {
+		t.Errorf("expected stale_after_s=1800, got %v", resp["stale_after_s"])
+	}
+}
+
+func TestHandleBuilderStaleAndNeverSynced(t *testing.T) {
+	t.Run("stale when sync too old", func(t *testing.T) {
+		builder := &mockBuilder{
+			lastSync:    time.Now().Add(-31 * time.Minute),
+			dailyVolume: []string{"v1"},
+			leaderboard: []string{"b1"},
+		}
+		s := NewServer(":0", &mockAppState{}, nil, builder)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/builder", nil)
+		w := httptest.NewRecorder()
+		s.handleBuilder(w, req)
+
+		var resp map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp["never_synced"] != false {
+			t.Fatalf("expected never_synced=false, got %v", resp["never_synced"])
+		}
+		if resp["stale"] != true {
+			t.Fatalf("expected stale=true, got %v", resp["stale"])
+		}
+	})
+
+	t.Run("never synced marked stale", func(t *testing.T) {
+		builder := &mockBuilder{
+			dailyVolume: []string{},
+			leaderboard: []string{},
+		}
+		s := NewServer(":0", &mockAppState{}, nil, builder)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/builder", nil)
+		w := httptest.NewRecorder()
+		s.handleBuilder(w, req)
+
+		var resp map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp["never_synced"] != true {
+			t.Fatalf("expected never_synced=true, got %v", resp["never_synced"])
+		}
+		if resp["stale"] != true {
+			t.Fatalf("expected stale=true, got %v", resp["stale"])
+		}
+		if resp["last_sync_age_s"] != nil {
+			t.Fatalf("expected nil last_sync_age_s when never synced, got %v", resp["last_sync_age_s"])
+		}
+	})
 }
 
 func TestHandleMarkets(t *testing.T) {
