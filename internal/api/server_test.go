@@ -637,6 +637,117 @@ func TestHandleStageReportCSV(t *testing.T) {
 	}
 }
 
+func TestHandleGrantPackageJSON(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       20,
+		pnl:         5.0,
+		unrealPnL:   -1.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -2,
+			DailyLossLimitUSDC: 25,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.5,
+			TotalVolumeUSDC: 320,
+			TotalTrades:     20,
+		},
+	}
+	builder := &mockBuilder{
+		lastSync:    time.Now().Add(-3 * time.Minute),
+		dailyVolume: []string{"v1", "v2"},
+		leaderboard: []string{"l1"},
+	}
+	s := NewServer(":0", state, nil, builder)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/grant-package?window=30d", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["package_id"] == "" {
+		t.Fatal("expected package_id")
+	}
+	window, ok := resp["window"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected window object, got %T", resp["window"])
+	}
+	if window["label"] != "30d" {
+		t.Fatalf("expected window.label=30d, got %v", window["label"])
+	}
+
+	artifacts, ok := resp["artifacts"].([]interface{})
+	if !ok || len(artifacts) == 0 {
+		t.Fatalf("expected non-empty artifacts list, got %v", resp["artifacts"])
+	}
+	if !containsArtifactName(artifacts, "stage_report_markdown") {
+		t.Fatalf("expected stage_report_markdown artifact, got %v", artifacts)
+	}
+	if !containsArtifactName(artifacts, "grant_report_csv") {
+		t.Fatalf("expected grant_report_csv artifact, got %v", artifacts)
+	}
+
+	milestones, ok := resp["milestones"].([]interface{})
+	if !ok || len(milestones) == 0 {
+		t.Fatalf("expected milestones list, got %v", resp["milestones"])
+	}
+
+	manifest, ok := resp["manifest"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected manifest object, got %T", resp["manifest"])
+	}
+	if manifest["checksum_sha256"] == "" {
+		t.Fatal("expected manifest.checksum_sha256")
+	}
+}
+
+func TestHandleGrantPackageMarkdown(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       10,
+		pnl:         2.0,
+		unrealPnL:   0.2,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -1,
+			DailyLossLimitUSDC: 20,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.2,
+			TotalVolumeUSDC: 120,
+			TotalTrades:     10,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/grant-package?format=markdown", nil)
+	w := httptest.NewRecorder()
+	s.handleGrantPackage(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/markdown") {
+		t.Fatalf("expected markdown content type, got %q", got)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "# Polymarket Grant Submission Package") {
+		t.Fatalf("expected markdown title, got %q", body)
+	}
+	if !strings.Contains(body, "Package ID:") {
+		t.Fatalf("expected package id line, got %q", body)
+	}
+	if !strings.Contains(body, "## Artifacts") {
+		t.Fatalf("expected artifacts section, got %q", body)
+	}
+}
+
 func TestHandleCoachNormal(t *testing.T) {
 	state := &mockAppState{
 		tradingMode: "paper",
@@ -820,6 +931,19 @@ func containsActionCode(actions []interface{}, code string) bool {
 			continue
 		}
 		if obj["code"] == code {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArtifactName(artifacts []interface{}, name string) bool {
+	for _, raw := range artifacts {
+		obj, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if obj["name"] == name {
 			return true
 		}
 	}

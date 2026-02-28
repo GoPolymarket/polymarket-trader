@@ -83,6 +83,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/execution-quality", s.handleExecutionQuality)
 	mux.HandleFunc("/api/daily-report", s.handleDailyReport)
 	mux.HandleFunc("/api/stage-report", s.handleStageReport)
+	mux.HandleFunc("/api/grant-package", s.handleGrantPackage)
 	mux.HandleFunc("/api/grant-report", s.handleGrantReport)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
@@ -1193,6 +1194,19 @@ type stageEvidence struct {
 	ChecksumGeneratedAt time.Time
 }
 
+type grantArtifact struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Purpose  string `json:"purpose"`
+	Required bool   `json:"required"`
+}
+
+type grantMilestone struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	EvidenceRef string `json:"evidence_ref"`
+}
+
 func parseStageWindow(raw string) stageWindow {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "30", "30d", "30day", "30days":
@@ -1246,6 +1260,98 @@ func buildStageEvidence(
 		ChecksumSHA256:      checksum,
 		ChecksumGeneratedAt: generatedAt.UTC(),
 	}
+}
+
+func buildGrantArtifacts(window stageWindow) []grantArtifact {
+	windowQ := "?window=" + window.label
+	return []grantArtifact{
+		{
+			Name:     "stage_report_json",
+			Path:     "/api/stage-report" + windowQ,
+			Purpose:  "Primary stage scorecard and evidence snapshot",
+			Required: true,
+		},
+		{
+			Name:     "stage_report_markdown",
+			Path:     "/api/stage-report" + windowQ + "&format=markdown",
+			Purpose:  "Human-readable stage narrative for reviewer",
+			Required: true,
+		},
+		{
+			Name:     "stage_report_csv",
+			Path:     "/api/stage-report" + windowQ + "&format=csv",
+			Purpose:  "Tabular KPI export for reviewer spreadsheet",
+			Required: true,
+		},
+		{
+			Name:     "grant_report_json",
+			Path:     "/api/grant-report",
+			Purpose:  "Builder + risk + performance aggregate payload",
+			Required: true,
+		},
+		{
+			Name:     "grant_report_csv",
+			Path:     "/api/grant-report?format=csv",
+			Purpose:  "Raw grant metrics table",
+			Required: true,
+		},
+		{
+			Name:     "daily_report_json",
+			Path:     "/api/daily-report",
+			Purpose:  "Actionable diagnosis and next-day plan",
+			Required: false,
+		},
+		{
+			Name:     "execution_quality_json",
+			Path:     "/api/execution-quality",
+			Purpose:  "Execution friction and edge attribution evidence",
+			Required: false,
+		},
+	}
+}
+
+func buildGrantMilestones() []grantMilestone {
+	return []grantMilestone{
+		{
+			Name:        "builder_attribution_ready",
+			Status:      "completed",
+			EvidenceRef: "/api/builder",
+		},
+		{
+			Name:        "risk_guardrails_enforced",
+			Status:      "completed",
+			EvidenceRef: "/api/risk",
+		},
+		{
+			Name:        "performance_and_quality_reporting",
+			Status:      "completed",
+			EvidenceRef: "/api/execution-quality",
+		},
+		{
+			Name:        "stage_review_bundle_exportable",
+			Status:      "completed",
+			EvidenceRef: "/api/stage-report",
+		},
+	}
+}
+
+func buildGrantManifestChecksum(
+	packageID string,
+	window stageWindow,
+	evidence stageEvidence,
+	artifacts []grantArtifact,
+	milestones []grantMilestone,
+) string {
+	parts := make([]string, 0, 5+len(artifacts)+len(milestones))
+	parts = append(parts, "grant-package-v1", packageID, window.label, strconv.Itoa(window.days), evidence.ID, evidence.ChecksumSHA256)
+	for _, a := range artifacts {
+		parts = append(parts, a.Name+"|"+a.Path+"|"+a.Purpose+"|"+strconv.FormatBool(a.Required))
+	}
+	for _, m := range milestones {
+		parts = append(parts, m.Name+"|"+m.Status+"|"+m.EvidenceRef)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "||")))
+	return hex.EncodeToString(sum[:])
 }
 
 func buildStageNarrative(
@@ -1344,6 +1450,51 @@ func renderStageReportMarkdown(
 	if len(actions) == 0 {
 		b.WriteString("- Keep current plan and continue monitoring.\n")
 	}
+	return b.String()
+}
+
+func renderGrantPackageMarkdown(
+	generatedAt time.Time,
+	packageID string,
+	window stageWindow,
+	mode string,
+	grantReadinessScore int,
+	evidence stageEvidence,
+	artifacts []grantArtifact,
+	milestones []grantMilestone,
+	manifestChecksum string,
+) string {
+	var b strings.Builder
+	b.WriteString("# Polymarket Grant Submission Package\n\n")
+	b.WriteString(fmt.Sprintf("- Generated At (UTC): %s\n", generatedAt.Format(time.RFC3339)))
+	b.WriteString(fmt.Sprintf("- Package ID: %s\n", packageID))
+	b.WriteString(fmt.Sprintf("- Trading Mode: %s\n", mode))
+	b.WriteString(fmt.Sprintf("- Window: %s (%d days)\n", window.label, window.days))
+	b.WriteString(fmt.Sprintf("- Grant Readiness Score: %d\n", grantReadinessScore))
+	b.WriteString(fmt.Sprintf("- Stage Evidence ID: %s\n", evidence.ID))
+	b.WriteString(fmt.Sprintf("- Stage Checksum (SHA256): %s\n", evidence.ChecksumSHA256))
+	b.WriteString(fmt.Sprintf("- Manifest Checksum (SHA256): %s\n\n", manifestChecksum))
+
+	b.WriteString("## Milestones\n")
+	for _, m := range milestones {
+		b.WriteString(fmt.Sprintf("- [%s] %s (%s)\n", m.Status, m.Name, m.EvidenceRef))
+	}
+	if len(milestones) == 0 {
+		b.WriteString("- No milestones listed.\n")
+	}
+
+	b.WriteString("\n## Artifacts\n")
+	for _, a := range artifacts {
+		required := "optional"
+		if a.Required {
+			required = "required"
+		}
+		b.WriteString(fmt.Sprintf("- `%s` (%s): %s — %s\n", a.Name, required, a.Path, a.Purpose))
+	}
+	if len(artifacts) == 0 {
+		b.WriteString("- No artifacts listed.\n")
+	}
+
 	return b.String()
 }
 
@@ -1894,6 +2045,101 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 				"/api/daily-report",
 			},
 			"version": "stage-report-v2",
+		},
+	})
+}
+
+// GET /api/grant-package — reviewer-friendly package manifest for grant submission.
+func (s *Server) handleGrantPackage(w http.ResponseWriter, r *http.Request) {
+	generatedAt := time.Now().UTC()
+	window := parseStageWindow(r.URL.Query().Get("window"))
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	builder := s.currentBuilderStatus()
+	hasTradingActivity := fills > 0
+	readinessScore := calcReadinessScore(builder.fresh, rs.canTrade, hasTradingActivity)
+
+	recentFills := s.appState.RecentFills(200)
+	metrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, s.appState.PaperSnapshot(), recentFills)
+	grantReadinessScore := int(math.Round(float64(readinessScore)*0.6 + metrics.QualityScore*0.4))
+	if grantReadinessScore < 0 {
+		grantReadinessScore = 0
+	}
+	if grantReadinessScore > 100 {
+		grantReadinessScore = 100
+	}
+
+	evidence := buildStageEvidence(
+		generatedAt,
+		mode,
+		window,
+		grantReadinessScore,
+		readinessScore,
+		metrics.QualityScore,
+		fills,
+		round2(totalPnL),
+		round2(metrics.NetPnLAfterFeesUSDC),
+		round2(metrics.NetEdgeBps),
+		round2(metrics.FeeRateBps),
+		builder.fresh,
+		rs.canTrade,
+		hasTradingActivity,
+	)
+	packageID := fmt.Sprintf("grant-%s-%s-%s", window.label, generatedAt.Format("20060102T150405Z"), evidence.ChecksumSHA256[:10])
+	artifacts := buildGrantArtifacts(window)
+	milestones := buildGrantMilestones()
+	manifestChecksum := buildGrantManifestChecksum(packageID, window, evidence, artifacts, milestones)
+
+	if format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))); format == "markdown" || format == "md" {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		md := renderGrantPackageMarkdown(
+			generatedAt,
+			packageID,
+			window,
+			mode,
+			grantReadinessScore,
+			evidence,
+			artifacts,
+			milestones,
+			manifestChecksum,
+		)
+		if _, err := w.Write([]byte(md)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at": generatedAt,
+		"package_id":   packageID,
+		"trading_mode": mode,
+		"window": map[string]interface{}{
+			"label": window.label,
+			"days":  window.days,
+		},
+		"scorecard": map[string]interface{}{
+			"grant_readiness_score": grantReadinessScore,
+			"readiness_score":       readinessScore,
+			"quality_score":         metrics.QualityScore,
+			"builder_fresh":         builder.fresh,
+			"risk_tradable":         rs.canTrade,
+			"has_trading_activity":  hasTradingActivity,
+		},
+		"milestones": milestones,
+		"artifacts":  artifacts,
+		"manifest": map[string]interface{}{
+			"checksum_sha256":       manifestChecksum,
+			"generated_at":          generatedAt,
+			"stage_evidence_id":     evidence.ID,
+			"stage_checksum_sha256": evidence.ChecksumSHA256,
+			"artifacts_count":       len(artifacts),
+			"milestones_count":      len(milestones),
+			"version":               "grant-package-v1",
 		},
 	})
 }
