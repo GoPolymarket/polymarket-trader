@@ -709,6 +709,12 @@ func TestHandleGrantPackageJSON(t *testing.T) {
 	if !containsArtifactName(artifacts, "grant_report_csv") {
 		t.Fatalf("expected grant_report_csv artifact, got %v", artifacts)
 	}
+	if !containsArtifactName(artifacts, "growth_funnel_json") {
+		t.Fatalf("expected growth_funnel_json artifact, got %v", artifacts)
+	}
+	if !containsArtifactName(artifacts, "alpha_manager_json") {
+		t.Fatalf("expected alpha_manager_json artifact, got %v", artifacts)
+	}
 	profitCase, ok := resp["profit_case"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected profit_case object, got %T", resp["profit_case"])
@@ -879,6 +885,177 @@ func TestHandleTelegramTemplatesRiskBlocked(t *testing.T) {
 	textDaily, _ := daily["text_html"].(string)
 	if !strings.Contains(strings.ToUpper(textDaily), "PAUSE") {
 		t.Fatalf("expected pause warning in daily template, got %q", textDaily)
+	}
+}
+
+func TestHandleAlphaManager(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       24,
+		pnl:         3.2,
+		unrealPnL:   -0.7,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -2.5,
+			DailyLossLimitUSDC:   25,
+			ConsecutiveLosses:    0,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.4,
+			TotalVolumeUSDC: 420,
+			TotalTrades:     24,
+		},
+		positions: map[string]execution.Position{
+			"asset-a": {AssetID: "asset-a", RealizedPnL: 2.6, TotalFills: 14},
+			"asset-b": {AssetID: "asset-b", RealizedPnL: -1.4, TotalFills: 10},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/alpha-manager", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	strategies, ok := resp["strategy_policies"].([]interface{})
+	if !ok || len(strategies) == 0 {
+		t.Fatalf("expected non-empty strategy_policies, got %v", resp["strategy_policies"])
+	}
+	markets, ok := resp["market_policies"].([]interface{})
+	if !ok || len(markets) == 0 {
+		t.Fatalf("expected non-empty market_policies, got %v", resp["market_policies"])
+	}
+}
+
+func TestHandleGrowthFunnel(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		assets:      []string{"a1", "a2", "a3", "a4"},
+		fills:       16,
+		pnl:         4.0,
+		unrealPnL:   -0.5,
+		paperSnapshot: paper.Snapshot{
+			InitialBalanceUSDC: 1000,
+			FeesPaidUSDC:       0.8,
+		},
+	}
+	builder := &mockBuilder{
+		lastSync:    time.Now().Add(-2 * time.Minute),
+		dailyVolume: []string{"v1", "v2", "v3"},
+		leaderboard: []string{"l1"},
+	}
+	s := NewServer(":0", state, nil, builder)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/growth-funnel", nil)
+	w := httptest.NewRecorder()
+	s.handleGrowthFunnel(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	metrics, ok := resp["metrics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metrics object, got %T", resp["metrics"])
+	}
+	funnel, ok := metrics["funnel"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected funnel object, got %T", metrics["funnel"])
+	}
+	if int(funnel["discover_markets"].(float64)) != 4 {
+		t.Fatalf("expected discover_markets=4, got %v", funnel["discover_markets"])
+	}
+}
+
+func TestHandleProfiles(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       12,
+		pnl:         0.8,
+		unrealPnL:   0.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -2,
+			DailyLossLimitUSDC: 20,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.2,
+			TotalVolumeUSDC: 150,
+			TotalTrades:     12,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/profiles", nil)
+	w := httptest.NewRecorder()
+	s.handleProfiles(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["recommended_profile"] == "" {
+		t.Fatalf("expected recommended_profile, got %v", resp["recommended_profile"])
+	}
+	profiles, ok := resp["profiles"].([]interface{})
+	if !ok || len(profiles) < 3 {
+		t.Fatalf("expected profiles list, got %v", resp["profiles"])
+	}
+}
+
+func TestHandleEcosystemPlaybook(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       18,
+		pnl:         3.5,
+		unrealPnL:   -0.3,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -2,
+			DailyLossLimitUSDC: 20,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.4,
+			TotalVolumeUSDC: 280,
+			TotalTrades:     18,
+		},
+	}
+	builder := &mockBuilder{
+		// zero lastSync => never synced, should emit sync_builder_data action.
+		dailyVolume: []string{"v1"},
+	}
+	s := NewServer(":0", state, nil, builder)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ecosystem-playbook", nil)
+	w := httptest.NewRecorder()
+	s.handleEcosystemPlaybook(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	automation, ok := resp["automation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected automation object, got %T", resp["automation"])
+	}
+	actions, ok := automation["actions"].([]interface{})
+	if !ok || len(actions) == 0 {
+		t.Fatalf("expected actions list, got %v", automation["actions"])
+	}
+	if !containsActionCode(actions, "sync_builder_data") {
+		t.Fatalf("expected sync_builder_data action, got %v", actions)
 	}
 }
 
@@ -1498,6 +1675,13 @@ func TestHandleExecutionQualityPaper(t *testing.T) {
 	if len(scenarios) == 0 {
 		t.Fatalf("expected non-empty scenarios, got %v", scenarios)
 	}
+	optimization, ok := resp["optimization"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected optimization object, got %T", resp["optimization"])
+	}
+	if optimization["priority_action_code"] == "" {
+		t.Fatalf("expected optimization.priority_action_code, got %v", optimization["priority_action_code"])
+	}
 
 	recs, ok := resp["recommendations"].([]interface{})
 	if !ok {
@@ -1558,6 +1742,13 @@ func TestHandleExecutionQualityLowEdge(t *testing.T) {
 	}
 	if uplift["priority_action_code"] == "" {
 		t.Fatalf("expected priority_action_code, got %v", uplift["priority_action_code"])
+	}
+	optimization, ok := resp["optimization"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected optimization object, got %T", resp["optimization"])
+	}
+	if optimization["suggested_clip_multiplier"].(float64) <= 0 {
+		t.Fatalf("expected positive suggested_clip_multiplier, got %v", optimization["suggested_clip_multiplier"])
 	}
 
 	recs, ok := resp["recommendations"].([]interface{})

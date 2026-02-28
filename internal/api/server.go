@@ -82,6 +82,10 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/coach", s.handleCoach)
 	mux.HandleFunc("/api/sizing", s.handleSizing)
 	mux.HandleFunc("/api/insights", s.handleInsights)
+	mux.HandleFunc("/api/alpha-manager", s.handleAlphaManager)
+	mux.HandleFunc("/api/growth-funnel", s.handleGrowthFunnel)
+	mux.HandleFunc("/api/profiles", s.handleProfiles)
+	mux.HandleFunc("/api/ecosystem-playbook", s.handleEcosystemPlaybook)
 	mux.HandleFunc("/api/execution-quality", s.handleExecutionQuality)
 	mux.HandleFunc("/api/telegram-templates", s.handleTelegramTemplates)
 	mux.HandleFunc("/api/daily-report", s.handleDailyReport)
@@ -1219,6 +1223,311 @@ func buildExecutionProfitUplift(
 	}
 }
 
+type executionOptimizationPlan struct {
+	SuggestedClipMultiplier float64  `json:"suggested_clip_multiplier"`
+	RequoteIntervalMs       int      `json:"requote_interval_ms"`
+	MaxOrdersPerMarket      int      `json:"max_orders_per_market"`
+	LiquidityWindowsUTC     []string `json:"liquidity_windows_utc"`
+	PriorityActionCode      string   `json:"priority_action_code"`
+	ExpectedSlippageDropBps float64  `json:"expected_slippage_drop_bps"`
+}
+
+func buildExecutionOptimizationPlan(
+	metrics executionQualityMetrics,
+	breakdown executionLossBreakdown,
+) executionOptimizationPlan {
+	clipMultiplier := 1.0
+	requoteMs := 1200
+	maxOrders := 2
+	expectedSlippageDrop := 0.0
+	windows := []string{"13:00-16:00", "18:00-22:00"}
+
+	switch {
+	case breakdown.SlippageProxyBps >= 5:
+		clipMultiplier = 0.6
+		requoteMs = 700
+		maxOrders = 1
+		expectedSlippageDrop = round2(breakdown.SlippageProxyBps * 0.35)
+	case breakdown.SlippageProxyBps >= 3:
+		clipMultiplier = 0.8
+		requoteMs = 900
+		maxOrders = 2
+		expectedSlippageDrop = round2(breakdown.SlippageProxyBps * 0.25)
+	}
+	if metrics.Fills < 12 {
+		requoteMs = 1500
+		windows = []string{"14:00-18:00"}
+	}
+
+	priorityAction := "maintain_execution_discipline"
+	switch {
+	case breakdown.FeeDragBps >= breakdown.SlippageProxyBps && breakdown.FeeDragBps >= breakdown.SelectivityLossBps:
+		priorityAction = "reduce_fee_drag"
+	case breakdown.SlippageProxyBps >= breakdown.SelectivityLossBps:
+		priorityAction = "reduce_slippage"
+	case breakdown.SelectivityLossBps > 0:
+		priorityAction = "improve_selectivity"
+	}
+
+	return executionOptimizationPlan{
+		SuggestedClipMultiplier: round2(clipMultiplier),
+		RequoteIntervalMs:       requoteMs,
+		MaxOrdersPerMarket:      maxOrders,
+		LiquidityWindowsUTC:     windows,
+		PriorityActionCode:      priorityAction,
+		ExpectedSlippageDropBps: round2(expectedSlippageDrop),
+	}
+}
+
+func alphaMarketState(score float64, fills int) string {
+	switch {
+	case fills >= 8 && score < 35:
+		return "disabled"
+	case score < 55:
+		return "deweight"
+	default:
+		return "active"
+	}
+}
+
+func buildAlphaMarketPolicies(scores []marketScore) []map[string]interface{} {
+	policies := make([]map[string]interface{}, 0, len(scores))
+	for _, sc := range scores {
+		state := alphaMarketState(sc.Score, sc.Fills)
+		reason := "stable"
+		switch state {
+		case "disabled":
+			reason = "low score with sufficient sample; pause until signal refresh"
+		case "deweight":
+			reason = "mid score; reduce allocation and observe"
+		}
+		policies = append(policies, map[string]interface{}{
+			"asset_id":             sc.AssetID,
+			"score":                sc.Score,
+			"fills":                sc.Fills,
+			"pnl_per_fill_usdc":    sc.PnLPerFillUSDC,
+			"realized_pnl_usdc":    sc.RealizedPnLUSDC,
+			"allocation_state":     state,
+			"gating_reason":        reason,
+			"next_review_in_hours": 24,
+		})
+	}
+	return policies
+}
+
+func strategyPolicyAction(health float64) (enabled bool, action string) {
+	switch {
+	case health < 45:
+		return false, "pause"
+	case health < 60:
+		return true, "deweight"
+	default:
+		return true, "keep"
+	}
+}
+
+func buildAlphaStrategyPolicies(
+	metrics executionQualityMetrics,
+	breakdown executionLossBreakdown,
+	fills int,
+) []map[string]interface{} {
+	makerHealth := 70.0
+	if breakdown.FeeDragBps >= 20 {
+		makerHealth -= 25
+	}
+	if metrics.NetEdgeBps <= 0 {
+		makerHealth -= 15
+	}
+
+	takerHealth := 70.0
+	if breakdown.SlippageProxyBps >= 3 {
+		takerHealth -= 25
+	}
+	if breakdown.SelectivityLossBps > 0 {
+		takerHealth -= 15
+	}
+
+	convergenceHealth := 65.0
+	if metrics.NetEdgeBps > 5 {
+		convergenceHealth += 12
+	}
+	if metrics.Fills < 10 {
+		convergenceHealth -= 10
+	}
+	if breakdown.SlippageProxyBps >= 5 {
+		convergenceHealth -= 12
+	}
+
+	cryptoHealth := 60.0
+	if fills >= 20 && metrics.PnLPerFillUSDC > 0 {
+		cryptoHealth += 20
+	}
+	if metrics.PnLPerFillUSDC <= 0 {
+		cryptoHealth -= 18
+	}
+
+	defs := []struct {
+		name       string
+		health     float64
+		rollbackH  int
+		challenger string
+	}{
+		{name: "maker_v1", health: makerHealth, rollbackH: 24, challenger: "maker_v1_1"},
+		{name: "taker_v2", health: takerHealth, rollbackH: 12, challenger: "taker_v2_1"},
+		{name: "convergence_v1", health: convergenceHealth, rollbackH: 24, challenger: "convergence_v1_1"},
+		{name: "crypto_v1", health: cryptoHealth, rollbackH: 48, challenger: "crypto_v1_1"},
+	}
+
+	out := make([]map[string]interface{}, 0, len(defs))
+	for _, d := range defs {
+		health := round2(clamp(d.health, 0, 100))
+		enabled, action := strategyPolicyAction(health)
+		out = append(out, map[string]interface{}{
+			"strategy_version":      d.name,
+			"health_score":          health,
+			"enabled":               enabled,
+			"allocation_action":     action,
+			"rollback_window_hours": d.rollbackH,
+			"ab_test": map[string]interface{}{
+				"champion":        d.name,
+				"challenger":      d.challenger,
+				"traffic_split":   "80/20",
+				"promote_if_edge": ">= +3 bps over 24h",
+			},
+		})
+	}
+	return out
+}
+
+func buildFunnelSummary(
+	monitoredMarkets int,
+	fills int,
+	netPnLAfterFees float64,
+	builder builderStatus,
+	estimatedEquity interface{},
+) map[string]interface{} {
+	discovered := monitoredMarkets
+	if discovered < 0 {
+		discovered = 0
+	}
+	fillPerMarket := 0.0
+	if discovered > 0 {
+		fillPerMarket = round2(float64(fills) / float64(discovered))
+	}
+	builderPerFill := 0.0
+	if fills > 0 {
+		builderPerFill = round2(float64(builder.dailyVolumeCount) / float64(fills))
+	}
+	retainedCapitalRatio := 0.0
+	if v, ok := estimatedEquity.(float64); ok && v > 0 {
+		retainedCapitalRatio = round2(v / 1000)
+	}
+	return map[string]interface{}{
+		"north_star": map[string]interface{}{
+			"name":  "net_pnl_after_fees_usdc_7d",
+			"value": round2(netPnLAfterFees),
+		},
+		"funnel": map[string]interface{}{
+			"discover_markets":         discovered,
+			"fills":                    fills,
+			"fill_per_market":          fillPerMarket,
+			"builder_records":          builder.dailyVolumeCount,
+			"builder_records_per_fill": builderPerFill,
+			"retained_capital_ratio":   retainedCapitalRatio,
+		},
+	}
+}
+
+func buildStrategyProfiles() []map[string]interface{} {
+	return []map[string]interface{}{
+		{
+			"id":          "builder_volume",
+			"description": "Prioritize builder contribution and activity density.",
+			"use_case":    "builder grant acceleration",
+			"config": map[string]interface{}{
+				"maker.min_spread_bps":    18,
+				"taker.amount_usdc":       1.5,
+				"risk.max_daily_loss_pct": 0.03,
+			},
+		},
+		{
+			"id":          "steady_alpha",
+			"description": "Prioritize stable edge and drawdown control.",
+			"use_case":    "capital preservation",
+			"config": map[string]interface{}{
+				"maker.min_spread_bps":    24,
+				"taker.amount_usdc":       0.8,
+				"risk.max_daily_loss_pct": 0.015,
+			},
+		},
+		{
+			"id":          "research_lab",
+			"description": "Maximize experimentation throughput with strict guardrails.",
+			"use_case":    "signal discovery",
+			"config": map[string]interface{}{
+				"maker.auto_select_top":     4,
+				"taker.min_composite_score": 0.25,
+				"risk.max_daily_loss_pct":   0.02,
+			},
+		},
+	}
+}
+
+func recommendProfile(rs riskStatus, metrics executionQualityMetrics) string {
+	if !rs.canTrade || rs.usagePct >= 80 {
+		return "steady_alpha"
+	}
+	if metrics.Fills < 20 {
+		return "research_lab"
+	}
+	if metrics.NetEdgeBps > 0 && metrics.FeeRateBps <= 20 {
+		return "builder_volume"
+	}
+	return "steady_alpha"
+}
+
+func buildEcosystemPlaybook(
+	builder builderStatus,
+	grantReadinessScore int,
+	metrics executionQualityMetrics,
+	rs riskStatus,
+) []map[string]interface{} {
+	actions := make([]map[string]interface{}, 0, 4)
+	if builder.neverSynced || builder.stale {
+		actions = append(actions, map[string]interface{}{
+			"code":        "sync_builder_data",
+			"priority":    "high",
+			"description": "Run builder sync before grant submission.",
+			"status":      "required",
+		})
+	}
+	if grantReadinessScore >= 75 && rs.canTrade {
+		actions = append(actions, map[string]interface{}{
+			"code":        "submit_grant_package",
+			"priority":    "high",
+			"description": "Grant package is submission-ready with current evidence chain.",
+			"status":      "ready",
+		})
+	}
+	if metrics.NetEdgeBps > 0 {
+		actions = append(actions, map[string]interface{}{
+			"code":        "publish_weekly_transparency",
+			"priority":    "medium",
+			"description": "Share weekly quality and uplift summary to attract users/builders.",
+			"status":      "recommended",
+		})
+	}
+	if len(actions) == 0 {
+		actions = append(actions, map[string]interface{}{
+			"code":        "collect_more_evidence",
+			"priority":    "medium",
+			"description": "Increase fill sample and builder sync freshness before outreach.",
+			"status":      "recommended",
+		})
+	}
+	return actions
+}
+
 func buildExecutionQualityRecommendations(
 	canTrade bool,
 	blockedReasons []string,
@@ -1654,6 +1963,24 @@ func buildGrantArtifacts(window stageWindow) []grantArtifact {
 			Name:     "execution_quality_json",
 			Path:     "/api/execution-quality",
 			Purpose:  "Execution friction and edge attribution evidence",
+			Required: false,
+		},
+		{
+			Name:     "alpha_manager_json",
+			Path:     "/api/alpha-manager",
+			Purpose:  "Strategy/market alpha governance with deweight and pause recommendations",
+			Required: false,
+		},
+		{
+			Name:     "growth_funnel_json",
+			Path:     "/api/growth-funnel",
+			Purpose:  "Unified PM growth funnel metrics and north-star definitions",
+			Required: false,
+		},
+		{
+			Name:     "ecosystem_playbook_json",
+			Path:     "/api/ecosystem-playbook",
+			Purpose:  "Builder/grant automation playbook and submission pipeline steps",
 			Required: false,
 		},
 	}
@@ -2273,6 +2600,144 @@ func (s *Server) handleInsights(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// GET /api/alpha-manager — strategy/market alpha governance and auto-gating recommendations.
+func (s *Server) handleAlphaManager(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	recentFills := s.appState.RecentFills(200)
+	metrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, s.appState.PaperSnapshot(), recentFills)
+	breakdown := calculateExecutionLossBreakdown(metrics)
+	marketPolicies := buildAlphaMarketPolicies(buildMarketScores(s.appState.TrackedPositions()))
+	strategyPolicies := buildAlphaStrategyPolicies(metrics, breakdown, fills)
+
+	disabledMarkets := 0
+	for _, mp := range marketPolicies {
+		if state, _ := mp["allocation_state"].(string); state == "disabled" {
+			disabledMarkets++
+		}
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":    generatedAt,
+		"trading_mode":    mode,
+		"can_trade":       rs.canTrade,
+		"blocked_reasons": rs.blockedReasons,
+		"summary": map[string]interface{}{
+			"net_edge_bps":              metrics.NetEdgeBps,
+			"quality_score":             metrics.QualityScore,
+			"markets_disabled":          disabledMarkets,
+			"strategy_versions_tracked": len(strategyPolicies),
+		},
+		"strategy_policies": strategyPolicies,
+		"market_policies":   marketPolicies,
+	})
+}
+
+// GET /api/growth-funnel — unified PM/growth funnel definitions and current values.
+func (s *Server) handleGrowthFunnel(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	fees := 0.0
+	var estimatedEquity interface{}
+	paperSnap := s.appState.PaperSnapshot()
+	if mode == "paper" {
+		fees = paperSnap.FeesPaidUSDC
+		estimatedEquity = paperSnap.InitialBalanceUSDC + totalPnL - fees
+	}
+	builder := s.currentBuilderStatus()
+	funnel := buildFunnelSummary(
+		len(s.appState.MonitoredAssets()),
+		fills,
+		totalPnL-fees,
+		builder,
+		estimatedEquity,
+	)
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at": generatedAt,
+		"trading_mode": mode,
+		"definitions": map[string]interface{}{
+			"discover_markets":       "count(monitored_assets)",
+			"fills":                  "total executed fills",
+			"fill_per_market":        "fills / discover_markets",
+			"builder_records":        "count(builder daily volume records)",
+			"retained_capital_ratio": "estimated_equity / baseline_capital(1000)",
+		},
+		"metrics": funnel,
+	})
+}
+
+// GET /api/profiles — productized parameter presets for user segmentation.
+func (s *Server) handleProfiles(w http.ResponseWriter, _ *http.Request) {
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	metrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, s.appState.PaperSnapshot(), s.appState.RecentFills(120))
+	recommended := recommendProfile(rs, metrics)
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":        time.Now().UTC(),
+		"recommended_profile": recommended,
+		"profiles":            buildStrategyProfiles(),
+		"reasoning": map[string]interface{}{
+			"can_trade":       rs.canTrade,
+			"daily_loss_used": round2(rs.usagePct),
+			"net_edge_bps":    metrics.NetEdgeBps,
+			"fills":           fills,
+		},
+	})
+}
+
+// GET /api/ecosystem-playbook — builder/grant ecosystem automation playbook.
+func (s *Server) handleEcosystemPlaybook(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	builder := s.currentBuilderStatus()
+	metrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, s.appState.PaperSnapshot(), s.appState.RecentFills(200))
+
+	hasTradingActivity := fills > 0
+	readinessScore := calcReadinessScore(builder.fresh, rs.canTrade, hasTradingActivity)
+	grantReadinessScore := int(math.Round(float64(readinessScore)*0.6 + metrics.QualityScore*0.4))
+	actions := buildEcosystemPlaybook(builder, grantReadinessScore, metrics, rs)
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at": generatedAt,
+		"window":       "7d",
+		"readiness": map[string]interface{}{
+			"grant_readiness_score": grantReadinessScore,
+			"builder_fresh":         builder.fresh,
+			"risk_tradable":         rs.canTrade,
+		},
+		"automation": map[string]interface{}{
+			"actions": actions,
+			"pipeline": []map[string]interface{}{
+				{"step": "sync_builder", "endpoint": "/api/builder"},
+				{"step": "validate_execution", "endpoint": "/api/execution-quality"},
+				{"step": "export_stage_report", "endpoint": "/api/stage-report?window=7d&format=markdown"},
+				{"step": "compose_submission", "endpoint": "/api/grant-package?window=7d&format=markdown"},
+			},
+		},
+	})
+}
+
 // GET /api/execution-quality — execution friction attribution and action hints.
 func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) {
 	generatedAt := time.Now().UTC()
@@ -2293,6 +2758,7 @@ func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) 
 	)
 	breakdown := calculateExecutionLossBreakdown(metrics)
 	profitUplift := buildExecutionProfitUplift(metrics, breakdown)
+	optimizationPlan := buildExecutionOptimizationPlan(metrics, breakdown)
 	recommendations := buildExecutionQualityRecommendations(
 		rs.canTrade,
 		rs.blockedReasons,
@@ -2308,6 +2774,7 @@ func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) 
 		"metrics":         metrics,
 		"breakdown":       breakdown,
 		"profit_uplift":   profitUplift,
+		"optimization":    optimizationPlan,
 		"recommendations": recommendations,
 	})
 }
@@ -2673,8 +3140,11 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 				"/api/grant-report",
 				"/api/coach",
 				"/api/insights",
+				"/api/alpha-manager",
+				"/api/growth-funnel",
 				"/api/execution-quality",
 				"/api/daily-report",
+				"/api/ecosystem-playbook",
 			},
 			"version": "stage-report-v2",
 		},
