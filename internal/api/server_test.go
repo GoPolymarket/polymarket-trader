@@ -884,6 +884,171 @@ func TestHandleExecutionQualityRiskBlocked(t *testing.T) {
 	}
 }
 
+func TestHandleDailyReportProfit(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       30,
+		pnl:         8.0,
+		unrealPnL:   -1.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -4.0,
+			DailyLossLimitUSDC:   50.0,
+			ConsecutiveLosses:    0,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    1.0,
+			TotalVolumeUSDC: 500.0,
+			TotalTrades:     30,
+		},
+		positions: map[string]execution.Position{
+			"asset-win":  {AssetID: "asset-win", RealizedPnL: 6.0, TotalFills: 15},
+			"asset-loss": {AssetID: "asset-loss", RealizedPnL: -1.5, TotalFills: 10},
+			"asset-mid":  {AssetID: "asset-mid", RealizedPnL: 0.6, TotalFills: 5},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/daily-report", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != true {
+		t.Fatalf("expected can_trade=true, got %v", resp["can_trade"])
+	}
+
+	diag, ok := resp["diagnosis"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected diagnosis object, got %T", resp["diagnosis"])
+	}
+	if diag["outcome"] != "profit" {
+		t.Fatalf("expected diagnosis.outcome=profit, got %v", diag["outcome"])
+	}
+
+	summary, ok := resp["summary"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected summary object, got %T", resp["summary"])
+	}
+	if !approxEqual(summary["net_pnl_after_fees_usdc"].(float64), 6.0) {
+		t.Fatalf("expected summary.net_pnl_after_fees_usdc=6.0, got %v", summary["net_pnl_after_fees_usdc"])
+	}
+
+	actions, ok := resp["next_actions"].([]interface{})
+	if !ok {
+		t.Fatalf("expected next_actions list, got %T", resp["next_actions"])
+	}
+	if !containsActionCode(actions, "focus_top_market") {
+		t.Fatalf("expected focus_top_market action, got %v", actions)
+	}
+}
+
+func TestHandleDailyReportLoss(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       25,
+		pnl:         -4.0,
+		unrealPnL:   0.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -18.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    2,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.8,
+			TotalVolumeUSDC: 400.0,
+			TotalTrades:     25,
+		},
+		positions: map[string]execution.Position{
+			"asset-a": {AssetID: "asset-a", RealizedPnL: -3.0, TotalFills: 12},
+			"asset-b": {AssetID: "asset-b", RealizedPnL: -1.2, TotalFills: 8},
+			"asset-c": {AssetID: "asset-c", RealizedPnL: 0.4, TotalFills: 5},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/daily-report", nil)
+	w := httptest.NewRecorder()
+	s.handleDailyReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	diag := resp["diagnosis"].(map[string]interface{})
+	if diag["outcome"] != "loss" {
+		t.Fatalf("expected diagnosis.outcome=loss, got %v", diag["outcome"])
+	}
+	plan := resp["tomorrow_plan"].(map[string]interface{})
+	if plan["risk_mode"] != "defensive" {
+		t.Fatalf("expected tomorrow_plan.risk_mode=defensive, got %v", plan["risk_mode"])
+	}
+
+	actions := resp["next_actions"].([]interface{})
+	if !containsActionCode(actions, "reduce_size_tomorrow") {
+		t.Fatalf("expected reduce_size_tomorrow action, got %v", actions)
+	}
+	if !containsActionCode(actions, "improve_selectivity") {
+		t.Fatalf("expected improve_selectivity action, got %v", actions)
+	}
+}
+
+func TestHandleDailyReportRiskBlocked(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       6,
+		pnl:         -1.0,
+		riskSnapshot: risk.Snapshot{
+			EmergencyStop:        true,
+			DailyPnL:             -12.0,
+			DailyLossLimitUSDC:   10.0,
+			ConsecutiveLosses:    3,
+			MaxConsecutiveLosses: 3,
+			InCooldown:           true,
+			CooldownRemaining:    2 * time.Minute,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.2,
+			TotalVolumeUSDC: 120.0,
+			TotalTrades:     6,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/daily-report", nil)
+	w := httptest.NewRecorder()
+	s.handleDailyReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != false {
+		t.Fatalf("expected can_trade=false, got %v", resp["can_trade"])
+	}
+
+	actions := resp["next_actions"].([]interface{})
+	if !containsActionCode(actions, "pause_trading") {
+		t.Fatalf("expected pause_trading action, got %v", actions)
+	}
+}
+
 func TestHandleTrades(t *testing.T) {
 	state := &mockAppState{
 		recentFills: []execution.Fill{

@@ -79,6 +79,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/coach", s.handleCoach)
 	mux.HandleFunc("/api/insights", s.handleInsights)
 	mux.HandleFunc("/api/execution-quality", s.handleExecutionQuality)
+	mux.HandleFunc("/api/daily-report", s.handleDailyReport)
 	mux.HandleFunc("/api/grant-report", s.handleGrantReport)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
@@ -1037,6 +1038,86 @@ func buildExecutionQualityRecommendations(
 	return recs
 }
 
+func pnlOutcome(netPnL float64) string {
+	if netPnL > 0 {
+		return "profit"
+	}
+	if netPnL < 0 {
+		return "loss"
+	}
+	return "flat"
+}
+
+func uniqueCoachActions(actions []coachAction) []coachAction {
+	if len(actions) == 0 {
+		return actions
+	}
+	seen := make(map[string]struct{}, len(actions))
+	out := make([]coachAction, 0, len(actions))
+	for _, a := range actions {
+		if _, ok := seen[a.Code]; ok {
+			continue
+		}
+		seen[a.Code] = struct{}{}
+		out = append(out, a)
+	}
+	return out
+}
+
+func topFocusAssets(scores []marketScore, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	for _, s := range scores {
+		if len(out) >= limit {
+			break
+		}
+		if s.Bucket == "focus" || len(out) == 0 {
+			out = append(out, s.AssetID)
+		}
+	}
+	return out
+}
+
+func buildDailyReportActions(
+	outcome string,
+	riskMode string,
+	rs riskStatus,
+	metrics executionQualityMetrics,
+	scores []marketScore,
+) []coachAction {
+	actions := make([]coachAction, 0, 10)
+	actions = append(actions, buildExecutionQualityRecommendations(rs.canTrade, rs.blockedReasons, metrics)...)
+
+	if len(scores) > 0 {
+		top := scores[0]
+		actions = append(actions, coachAction{
+			Code:     "focus_top_market",
+			Severity: "info",
+			Message:  fmt.Sprintf("Tomorrow focus market: %s (score %.2f).", top.AssetID, top.Score),
+		})
+		worst := scores[len(scores)-1]
+		if worst.Bucket == "deprioritize" {
+			actions = append(actions, coachAction{
+				Code:     "deprioritize_worst_market",
+				Severity: "warn",
+				Message:  fmt.Sprintf("Tomorrow de-prioritize %s (score %.2f).", worst.AssetID, worst.Score),
+			})
+		}
+	}
+
+	if outcome == "loss" || riskMode != "normal" || rs.usagePct >= 80 {
+		actions = append(actions, coachAction{
+			Code:     "reduce_size_tomorrow",
+			Severity: "warn",
+			Message:  "Start next cycle with smaller size until edge stabilizes.",
+		})
+	}
+
+	return uniqueCoachActions(actions)
+}
+
 // GET /api/risk — current risk guardrail status.
 func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 	snap := s.appState.RiskSnapshot()
@@ -1274,6 +1355,80 @@ func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) 
 		"blocked_reasons": rs.blockedReasons,
 		"metrics":         metrics,
 		"recommendations": recommendations,
+	})
+}
+
+// GET /api/daily-report — day-close diagnosis and next-cycle action plan.
+func (s *Server) handleDailyReport(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	riskMode, sizeMultiplier := chooseSizingMode(
+		rs.canTrade,
+		rs.usagePct,
+		totalPnL,
+		snap.ConsecutiveLosses,
+		snap.MaxConsecutiveLosses,
+	)
+
+	recentFills := s.appState.RecentFills(200)
+	metrics := calculateExecutionQualityMetrics(
+		mode,
+		fills,
+		totalPnL,
+		s.appState.PaperSnapshot(),
+		recentFills,
+	)
+	netPnLAfterFees := round2(totalPnL - metrics.FeesPaidUSDC)
+	outcome := pnlOutcome(netPnLAfterFees)
+	scores := buildMarketScores(s.appState.TrackedPositions())
+	actions := buildDailyReportActions(outcome, riskMode, rs, metrics, scores)
+
+	reasons := []string{
+		fmt.Sprintf("net_edge_bps=%.2f", metrics.NetEdgeBps),
+		fmt.Sprintf("fee_rate_bps=%.2f", metrics.FeeRateBps),
+	}
+	if !rs.canTrade {
+		reasons = append(reasons, fmt.Sprintf("risk_blocked=%s", strings.Join(rs.blockedReasons, ",")))
+	}
+	if len(scores) > 0 {
+		reasons = append(reasons, fmt.Sprintf("top_market=%s", scores[0].AssetID))
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":    generatedAt,
+		"trading_mode":    mode,
+		"can_trade":       rs.canTrade,
+		"blocked_reasons": rs.blockedReasons,
+		"summary": map[string]interface{}{
+			"fills":                   fills,
+			"realized_pnl_usdc":       round2(realized),
+			"unrealized_pnl_usdc":     round2(unrealized),
+			"total_pnl_usdc":          round2(totalPnL),
+			"fees_paid_usdc":          round2(metrics.FeesPaidUSDC),
+			"net_pnl_after_fees_usdc": netPnLAfterFees,
+			"pnl_per_fill_usdc":       round2(metrics.PnLPerFillUSDC),
+			"gross_edge_bps":          round2(metrics.GrossEdgeBps),
+			"net_edge_bps":            round2(metrics.NetEdgeBps),
+			"fee_rate_bps":            round2(metrics.FeeRateBps),
+		},
+		"diagnosis": map[string]interface{}{
+			"outcome":       outcome,
+			"quality_score": metrics.QualityScore,
+			"reasons":       reasons,
+		},
+		"market_scores": scores,
+		"tomorrow_plan": map[string]interface{}{
+			"risk_mode":       riskMode,
+			"size_multiplier": sizeMultiplier,
+			"focus_assets":    topFocusAssets(scores, 2),
+		},
+		"next_actions": actions,
 	})
 }
 
