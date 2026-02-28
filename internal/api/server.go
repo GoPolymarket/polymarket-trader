@@ -1762,19 +1762,8 @@ func renderTelegramDailyTemplate(
 	actions []string,
 	riskHints []string,
 ) string {
-	status := "ACTIVE"
-	if !canTrade {
-		status = "PAUSE"
-	}
-	return telegramtmpl.RenderDailyHTML(telegramtmpl.DailyData{
-		Mode:                mode,
-		Status:              status,
-		RiskMode:            strings.ToUpper(riskMode),
-		NetPnLAfterFeesUSDC: netPnLAfterFees,
-		Fills:               fills,
-		Actions:             actions,
-		RiskHints:           riskHints,
-	})
+	data := telegramtmpl.BuildDailyData(mode, canTrade, riskMode, netPnLAfterFees, fills, actions, riskHints)
+	return telegramtmpl.RenderDailyHTML(data)
 }
 
 func renderTelegramWeeklyTemplate(
@@ -1787,17 +1776,8 @@ func renderTelegramWeeklyTemplate(
 	highlights []string,
 	warnings []string,
 ) string {
-	return telegramtmpl.RenderWeeklyHTML(telegramtmpl.WeeklyData{
-		WindowLabel:         window.label,
-		WindowDays:          window.days,
-		TotalPnLUSDC:        totalPnL,
-		NetPnLAfterFeesUSDC: netPnLAfterFees,
-		Fills:               fills,
-		NetEdgeBps:          netEdgeBps,
-		QualityScore:        qualityScore,
-		Highlights:          highlights,
-		Warnings:            warnings,
-	})
+	data := telegramtmpl.BuildWeeklyData("", window.label, window.days, totalPnL, netPnLAfterFees, fills, netEdgeBps, qualityScore, highlights, warnings)
+	return telegramtmpl.RenderWeeklyHTML(data)
 }
 
 func (s *Server) writeStageReportCSV(

@@ -30,6 +30,65 @@ type WeeklyData struct {
 	Warnings            []string
 }
 
+// BuildDailyData normalizes daily template inputs into a renderable payload.
+func BuildDailyData(
+	mode string,
+	canTrade bool,
+	riskMode string,
+	netPnLAfterFeesUSDC float64,
+	fills int,
+	actions []string,
+	riskHints []string,
+) DailyData {
+	status := "ACTIVE"
+	if !canTrade {
+		status = "PAUSE"
+	}
+	if len(actions) > 3 {
+		actions = actions[:3]
+	}
+	return DailyData{
+		Mode:                strings.ToUpper(strings.TrimSpace(mode)),
+		Status:              status,
+		RiskMode:            strings.ToUpper(strings.TrimSpace(riskMode)),
+		NetPnLAfterFeesUSDC: netPnLAfterFeesUSDC,
+		Fills:               fills,
+		Actions:             actions,
+		RiskHints:           riskHints,
+	}
+}
+
+// BuildWeeklyData normalizes weekly template inputs into a renderable payload.
+func BuildWeeklyData(
+	mode string,
+	windowLabel string,
+	windowDays int,
+	totalPnLUSDC float64,
+	netPnLAfterFeesUSDC float64,
+	fills int,
+	netEdgeBps float64,
+	qualityScore float64,
+	highlights []string,
+	warnings []string,
+) WeeklyData {
+	label := strings.TrimSpace(windowLabel)
+	if label == "" && windowDays > 0 {
+		label = fmt.Sprintf("%dd", windowDays)
+	}
+	return WeeklyData{
+		Mode:                strings.ToUpper(strings.TrimSpace(mode)),
+		WindowLabel:         label,
+		WindowDays:          windowDays,
+		TotalPnLUSDC:        totalPnLUSDC,
+		NetPnLAfterFeesUSDC: netPnLAfterFeesUSDC,
+		Fills:               fills,
+		NetEdgeBps:          netEdgeBps,
+		QualityScore:        qualityScore,
+		Highlights:          highlights,
+		Warnings:            warnings,
+	}
+}
+
 // RenderDailyHTML renders a daily Telegram coaching template in HTML parse mode.
 func RenderDailyHTML(d DailyData) string {
 	var b strings.Builder

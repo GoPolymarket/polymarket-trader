@@ -6,15 +6,16 @@ import (
 )
 
 func TestRenderDailyHTML(t *testing.T) {
-	msg := RenderDailyHTML(DailyData{
-		Mode:                "paper",
-		Status:              "ACTIVE",
-		RiskMode:            "NORMAL",
-		NetPnLAfterFeesUSDC: 3.5,
-		Fills:               12,
-		Actions:             []string{"Focus top market", "Keep defensive size"},
-		RiskHints:           []string{"Daily loss usage is high"},
-	})
+	data := BuildDailyData(
+		"paper",
+		true,
+		"normal",
+		3.5,
+		12,
+		[]string{"Focus top market", "Keep defensive size"},
+		[]string{"Daily loss usage is high"},
+	)
+	msg := RenderDailyHTML(data)
 
 	if !strings.Contains(msg, "Daily Trading Coach") {
 		t.Fatalf("expected daily title, got %q", msg)
@@ -25,21 +26,25 @@ func TestRenderDailyHTML(t *testing.T) {
 	if !strings.Contains(msg, "Risk Hints") {
 		t.Fatalf("expected risk hints section, got %q", msg)
 	}
+	if !strings.Contains(msg, "Mode: PAPER") {
+		t.Fatalf("expected uppercased mode, got %q", msg)
+	}
 }
 
 func TestRenderWeeklyHTML(t *testing.T) {
-	msg := RenderWeeklyHTML(WeeklyData{
-		Mode:                "paper",
-		WindowLabel:         "7d",
-		WindowDays:          7,
-		TotalPnLUSDC:        8.1,
-		NetPnLAfterFeesUSDC: 7.7,
-		Fills:               30,
-		NetEdgeBps:          24,
-		QualityScore:        78,
-		Highlights:          []string{"Net edge positive"},
-		Warnings:            []string{"Fee drag elevated"},
-	})
+	data := BuildWeeklyData(
+		"paper",
+		"7d",
+		7,
+		8.1,
+		7.7,
+		30,
+		24,
+		78,
+		[]string{"Net edge positive"},
+		[]string{"Fee drag elevated"},
+	)
+	msg := RenderWeeklyHTML(data)
 
 	if !strings.Contains(msg, "Weekly Trading Review") {
 		t.Fatalf("expected weekly title, got %q", msg)
@@ -49,5 +54,26 @@ func TestRenderWeeklyHTML(t *testing.T) {
 	}
 	if !strings.Contains(msg, "Warnings") {
 		t.Fatalf("expected warnings section, got %q", msg)
+	}
+	if !strings.Contains(msg, "Mode: PAPER") {
+		t.Fatalf("expected uppercased mode, got %q", msg)
+	}
+}
+
+func TestBuildDailyDataLimitsActions(t *testing.T) {
+	data := BuildDailyData(
+		"live",
+		false,
+		"defensive",
+		-1.2,
+		5,
+		[]string{"a1", "a2", "a3", "a4"},
+		nil,
+	)
+	if len(data.Actions) != 3 {
+		t.Fatalf("expected actions limited to 3, got %d", len(data.Actions))
+	}
+	if data.Status != "PAUSE" {
+		t.Fatalf("expected status PAUSE, got %s", data.Status)
 	}
 }

@@ -1142,15 +1142,10 @@ func (a *App) buildDailyTelegramTemplate() string {
 	if !canTrade {
 		status = "PAUSE"
 	}
-	return telegramtmpl.RenderDailyHTML(telegramtmpl.DailyData{
-		Mode:                mode,
-		Status:              status,
-		RiskMode:            riskMode,
-		NetPnLAfterFeesUSDC: netPnL,
-		Fills:               fills,
-		Actions:             actions,
-		RiskHints:           hints,
-	})
+	data := telegramtmpl.BuildDailyData(mode, canTrade, riskMode, netPnL, fills, actions, hints)
+	// Preserve explicit status from runtime guardrails for this scheduled push path.
+	data.Status = status
+	return telegramtmpl.RenderDailyHTML(data)
 }
 
 func executionQualityScore(netEdgeBps, feeRateBps float64, fills int) float64 {
@@ -1218,18 +1213,19 @@ func (a *App) buildWeeklyTelegramTemplate(windowDays int) string {
 	if !canTrade {
 		warnings = append(warnings, "Risk guardrails paused trading during this window.")
 	}
-	return telegramtmpl.RenderWeeklyHTML(telegramtmpl.WeeklyData{
-		Mode:                mode,
-		WindowLabel:         fmt.Sprintf("%dd", windowDays),
-		WindowDays:          windowDays,
-		TotalPnLUSDC:        totalPnL,
-		NetPnLAfterFeesUSDC: netPnL,
-		Fills:               fills,
-		NetEdgeBps:          netEdgeBps,
-		QualityScore:        quality,
-		Highlights:          highlights,
-		Warnings:            warnings,
-	})
+	data := telegramtmpl.BuildWeeklyData(
+		mode,
+		fmt.Sprintf("%dd", windowDays),
+		windowDays,
+		totalPnL,
+		netPnL,
+		fills,
+		netEdgeBps,
+		quality,
+		highlights,
+		warnings,
+	)
+	return telegramtmpl.RenderWeeklyHTML(data)
 }
 
 func (a *App) resetDailyRisk() {
