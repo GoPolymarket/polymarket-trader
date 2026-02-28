@@ -1722,37 +1722,6 @@ func renderGrantPackageMarkdown(
 	return b.String()
 }
 
-func topActionMessages(actions []coachAction, limit int) []string {
-	if limit <= 0 || len(actions) == 0 {
-		return nil
-	}
-	if len(actions) < limit {
-		limit = len(actions)
-	}
-	out := make([]string, 0, limit)
-	for i := 0; i < limit; i++ {
-		out = append(out, actions[i].Message)
-	}
-	return out
-}
-
-func buildRiskHints(rs riskStatus, riskMode string) []string {
-	hints := make([]string, 0, 4)
-	if !rs.canTrade {
-		hints = append(hints, "PAUSE: risk guardrails are blocking new trades.")
-	}
-	if rs.usagePct >= 80 {
-		hints = append(hints, "Daily loss usage is high; keep defensive size.")
-	}
-	if riskMode == "defensive" {
-		hints = append(hints, "Run defensive sizing (50%) until edge stabilizes.")
-	}
-	if len(rs.blockedReasons) > 0 {
-		hints = append(hints, "Blocked reasons: "+strings.Join(rs.blockedReasons, ","))
-	}
-	return hints
-}
-
 func renderTelegramDailyTemplate(
 	mode string,
 	canTrade bool,
@@ -2267,35 +2236,32 @@ func (s *Server) handleTelegramTemplates(w http.ResponseWriter, r *http.Request)
 	)
 	breakdown := calculateExecutionLossBreakdown(metrics)
 	scores := buildMarketScores(s.appState.TrackedPositions())
-	actions := buildDailyReportActions(
-		pnlOutcome(metrics.NetPnLAfterFeesUSDC),
-		riskMode,
-		rs,
-		metrics,
-		scores,
-	)
-	actionMessages := topActionMessages(actions, 3)
-	riskHints := buildRiskHints(rs, riskMode)
-
-	highlights := make([]string, 0, 3)
-	warnings := make([]string, 0, 4)
-	if metrics.NetEdgeBps > 0 {
-		highlights = append(highlights, fmt.Sprintf("Net edge remains positive at %.2f bps.", metrics.NetEdgeBps))
-	} else {
-		warnings = append(warnings, fmt.Sprintf("Net edge is non-positive at %.2f bps.", metrics.NetEdgeBps))
-	}
+	bestMarket := ""
+	bestScore := 0.0
 	if len(scores) > 0 {
-		highlights = append(highlights, fmt.Sprintf("Top market this period: %s (score %.2f).", scores[0].AssetID, scores[0].Score))
+		bestMarket = scores[0].AssetID
+		bestScore = scores[0].Score
 	}
-	if breakdown.FeeDragBps >= 20 {
-		warnings = append(warnings, fmt.Sprintf("Fee drag is elevated (%.2f bps).", breakdown.FeeDragBps))
+	adviceIn := telegramtmpl.DailyAdviceInput{
+		CanTrade:          rs.canTrade,
+		RiskMode:          riskMode,
+		Fills:             fills,
+		NetPnLAfterFees:   metrics.NetPnLAfterFeesUSDC,
+		BestMarket:        bestMarket,
+		RiskUsagePct:      rs.usagePct,
+		BlockedReasons:    rs.blockedReasons,
+		CooldownRemaining: snap.CooldownRemaining,
 	}
-	if breakdown.SlippageProxyBps >= 3 {
-		warnings = append(warnings, fmt.Sprintf("Slippage proxy is elevated (%.2f bps).", breakdown.SlippageProxyBps))
-	}
-	if !rs.canTrade {
-		warnings = append(warnings, "Trading is currently paused by risk guardrails.")
-	}
+	actionMessages := telegramtmpl.BuildDailyActions(adviceIn)
+	riskHints := telegramtmpl.BuildRiskHints(adviceIn)
+	highlights, warnings := telegramtmpl.BuildWeeklyHighlightsWarnings(telegramtmpl.WeeklyAdviceInput{
+		NetEdgeBps:       metrics.NetEdgeBps,
+		TopMarket:        bestMarket,
+		TopMarketScore:   bestScore,
+		FeeDragBps:       breakdown.FeeDragBps,
+		SlippageProxyBps: breakdown.SlippageProxyBps,
+		CanTrade:         rs.canTrade,
+	})
 
 	dailyText := renderTelegramDailyTemplate(
 		mode,

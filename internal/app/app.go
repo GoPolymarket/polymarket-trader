@@ -1105,43 +1105,22 @@ func (a *App) buildDailyTelegramTemplate() string {
 	reasons := riskBlockedReasonsFromSnapshot(snap)
 	canTrade := len(reasons) == 0
 	riskMode := strings.ToUpper(riskModeFromSnapshot(snap, totalPnL))
-
-	actions := make([]string, 0, 4)
-	if !canTrade {
-		actions = append(actions, "Pause new trades until risk blockers clear.")
-	} else if riskMode == "DEFENSIVE" {
-		actions = append(actions, "Run defensive size mode (50%) for next cycle.")
-	}
-	if fills < 20 {
-		actions = append(actions, "Collect at least 20 fills before scaling size.")
-	}
-	if netPnL <= 0 {
-		actions = append(actions, "Improve selectivity: tighten entry filters.")
-	}
-	if best := a.bestRealizedMarket(); best != "" {
-		actions = append(actions, fmt.Sprintf("Focus allocation on strongest market: %s.", best))
-	}
-	if len(actions) == 0 {
-		actions = append(actions, "Keep current execution discipline and monitor drift.")
-	}
-	if len(actions) > 3 {
-		actions = actions[:3]
-	}
-
-	hints := make([]string, 0, 3)
-	if usage := riskUsagePctFromSnapshot(snap); usage >= 80 {
-		hints = append(hints, fmt.Sprintf("Daily loss usage is high (%.1f%%).", usage))
-	}
-	if len(reasons) > 0 {
-		hints = append(hints, "Blocked reasons: "+strings.Join(reasons, ","))
-	}
-	if snap.InCooldown {
-		hints = append(hints, fmt.Sprintf("Cooldown remaining: %.0fs.", snap.CooldownRemaining.Seconds()))
-	}
 	status := "ACTIVE"
 	if !canTrade {
 		status = "PAUSE"
 	}
+	adviceIn := telegramtmpl.DailyAdviceInput{
+		CanTrade:          canTrade,
+		RiskMode:          riskMode,
+		Fills:             fills,
+		NetPnLAfterFees:   netPnL,
+		BestMarket:        a.bestRealizedMarket(),
+		RiskUsagePct:      riskUsagePctFromSnapshot(snap),
+		BlockedReasons:    reasons,
+		CooldownRemaining: snap.CooldownRemaining,
+	}
+	actions := telegramtmpl.BuildDailyActions(adviceIn)
+	hints := telegramtmpl.BuildRiskHints(adviceIn)
 	data := telegramtmpl.BuildDailyData(mode, canTrade, riskMode, netPnL, fills, actions, hints)
 	// Preserve explicit status from runtime guardrails for this scheduled push path.
 	data.Status = status
@@ -1196,23 +1175,14 @@ func (a *App) buildWeeklyTelegramTemplate(windowDays int) string {
 	quality := executionQualityScore(netEdgeBps, feeRateBps, fills)
 	snap := a.riskMgr.Snapshot()
 	canTrade := len(riskBlockedReasonsFromSnapshot(snap)) == 0
-
-	var highlights []string
-	var warnings []string
-	if netEdgeBps > 0 {
-		highlights = append(highlights, fmt.Sprintf("Net edge stays positive at %.2f bps.", netEdgeBps))
-	} else {
-		warnings = append(warnings, fmt.Sprintf("Net edge is non-positive at %.2f bps.", netEdgeBps))
-	}
-	if best := a.bestRealizedMarket(); best != "" {
-		highlights = append(highlights, fmt.Sprintf("Best realized market: %s.", best))
-	}
-	if feeRateBps >= 20 {
-		warnings = append(warnings, fmt.Sprintf("Fee drag is elevated (%.2f bps).", feeRateBps))
-	}
-	if !canTrade {
-		warnings = append(warnings, "Risk guardrails paused trading during this window.")
-	}
+	highlights, warnings := telegramtmpl.BuildWeeklyHighlightsWarnings(telegramtmpl.WeeklyAdviceInput{
+		NetEdgeBps:       netEdgeBps,
+		TopMarket:        a.bestRealizedMarket(),
+		TopMarketScore:   0,
+		FeeDragBps:       feeRateBps,
+		SlippageProxyBps: 0,
+		CanTrade:         canTrade,
+	})
 	data := telegramtmpl.BuildWeeklyData(
 		mode,
 		fmt.Sprintf("%dd", windowDays),
