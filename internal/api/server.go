@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -238,14 +239,44 @@ func (s *Server) handleMarkets(w http.ResponseWriter, _ *http.Request) {
 // GET /api/builder — builder volume and leaderboard data.
 func (s *Server) handleBuilder(w http.ResponseWriter, _ *http.Request) {
 	if s.builder == nil {
-		s.writeJSON(w, map[string]string{"status": "not_configured"})
+		s.writeJSON(w, map[string]interface{}{
+			"status":             "not_configured",
+			"configured":         false,
+			"daily_volume_count": 0,
+			"leaderboard_count":  0,
+			"last_sync_age_s":    nil,
+		})
 		return
 	}
+	dailyVolume := s.builder.DailyVolumeJSON()
+	leaderboard := s.builder.LeaderboardJSON()
+	lastSync := s.builder.LastSync()
+	lastSyncAgeS := 0.0
+	if !lastSync.IsZero() {
+		lastSyncAgeS = time.Since(lastSync).Seconds()
+	}
 	s.writeJSON(w, map[string]interface{}{
-		"daily_volume": s.builder.DailyVolumeJSON(),
-		"leaderboard":  s.builder.LeaderboardJSON(),
-		"last_sync":    s.builder.LastSync(),
+		"configured":         true,
+		"daily_volume":       dailyVolume,
+		"daily_volume_count": countEntries(dailyVolume),
+		"leaderboard":        leaderboard,
+		"leaderboard_count":  countEntries(leaderboard),
+		"last_sync":          lastSync,
+		"last_sync_age_s":    lastSyncAgeS,
 	})
+}
+
+func countEntries(v interface{}) int {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return 0
+	}
+	switch rv.Kind() {
+	case reflect.Array, reflect.Slice, reflect.Map, reflect.String:
+		return rv.Len()
+	default:
+		return 0
+	}
 }
 
 // GET /api/risk — current risk guardrail status.

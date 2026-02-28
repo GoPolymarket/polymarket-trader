@@ -50,11 +50,13 @@ func (m *mockPortfolio) TotalValue() float64 { return m.value }
 func (m *mockPortfolio) LastSync() time.Time { return m.lastSync }
 
 type mockBuilder struct {
-	lastSync time.Time
+	lastSync    time.Time
+	dailyVolume interface{}
+	leaderboard interface{}
 }
 
-func (m *mockBuilder) DailyVolumeJSON() interface{} { return []string{} }
-func (m *mockBuilder) LeaderboardJSON() interface{} { return []string{} }
+func (m *mockBuilder) DailyVolumeJSON() interface{} { return m.dailyVolume }
+func (m *mockBuilder) LeaderboardJSON() interface{} { return m.leaderboard }
 func (m *mockBuilder) LastSync() time.Time          { return m.lastSync }
 
 func TestHandleStatus(t *testing.T) {
@@ -209,7 +211,11 @@ func TestHandleEmergencyStopMethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleBuilder(t *testing.T) {
-	builder := &mockBuilder{lastSync: time.Now()}
+	builder := &mockBuilder{
+		lastSync:    time.Now().Add(-2 * time.Minute),
+		dailyVolume: []string{"v1", "v2"},
+		leaderboard: []string{"b1"},
+	}
 	s := NewServer(":0", &mockAppState{}, nil, builder)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/builder", nil)
@@ -222,6 +228,18 @@ func TestHandleBuilder(t *testing.T) {
 	}
 	if resp["last_sync"] == nil {
 		t.Error("expected last_sync")
+	}
+	if resp["configured"] != true {
+		t.Errorf("expected configured=true, got %v", resp["configured"])
+	}
+	if int(resp["daily_volume_count"].(float64)) != 2 {
+		t.Errorf("expected daily_volume_count=2, got %v", resp["daily_volume_count"])
+	}
+	if int(resp["leaderboard_count"].(float64)) != 1 {
+		t.Errorf("expected leaderboard_count=1, got %v", resp["leaderboard_count"])
+	}
+	if resp["last_sync_age_s"] == nil {
+		t.Error("expected last_sync_age_s")
 	}
 }
 
@@ -238,6 +256,15 @@ func TestHandleBuilderNotConfigured(t *testing.T) {
 	}
 	if resp["status"] != "not_configured" {
 		t.Errorf("expected status=not_configured, got %v", resp["status"])
+	}
+	if resp["configured"] != false {
+		t.Errorf("expected configured=false, got %v", resp["configured"])
+	}
+	if int(resp["daily_volume_count"].(float64)) != 0 {
+		t.Errorf("expected daily_volume_count=0, got %v", resp["daily_volume_count"])
+	}
+	if int(resp["leaderboard_count"].(float64)) != 0 {
+		t.Errorf("expected leaderboard_count=0, got %v", resp["leaderboard_count"])
 	}
 }
 

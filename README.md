@@ -188,6 +188,7 @@ Startup validation fails fast on invalid risk bounds (for example non-positive `
 If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/status`
 - `GET /api/pnl`
+- `GET /api/builder` (builder daily volume/leaderboard with `daily_volume_count`, `leaderboard_count`, `last_sync_age_s`)
 - `GET /api/risk` (daily cap usage/headroom + `can_trade` and machine-readable `blocked_reasons`)
 - `GET /api/paper` (paper balance, fees, shorting flag, inventory, realized/unrealized PnL, estimated equity)
 
