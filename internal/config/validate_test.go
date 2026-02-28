@@ -91,3 +91,11 @@ func TestValidateInvalidRiskCoreValues(t *testing.T) {
 		t.Fatal("expected negative risk.consecutive_loss_cooldown to fail validation")
 	}
 }
+
+func TestValidateInvalidBuilderSyncInterval(t *testing.T) {
+	cfg := Default()
+	cfg.BuilderSyncInterval = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected non-positive builder_sync_interval to fail validation")
+	}
+}

@@ -3,6 +3,7 @@ scan_interval: 10s
 dry_run: true
 trading_mode: paper
 log_level: info
+builder_sync_interval: 10m
 
 maker:
   enabled: true

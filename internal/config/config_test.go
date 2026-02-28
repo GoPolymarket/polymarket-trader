@@ -32,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TradingMode != "paper" {
 		t.Fatalf("expected trading_mode=paper by default, got %q", cfg.TradingMode)
 	}
+	if cfg.BuilderSyncInterval != 10*time.Minute {
+		t.Fatalf("expected builder_sync_interval=10m by default, got %v", cfg.BuilderSyncInterval)
+	}
 	if cfg.Paper.InitialBalanceUSDC <= 0 {
 		t.Fatal("expected positive paper initial_balance_usdc by default")
 	}
@@ -55,6 +58,7 @@ risk:
   max_consecutive_losses: 4
   consecutive_loss_cooldown: 45m
 trading_mode: live
+builder_sync_interval: 2m
 paper:
   initial_balance_usdc: 2000
   fee_bps: 12
@@ -101,6 +105,9 @@ paper:
 	}
 	if cfg.TradingMode != "live" {
 		t.Fatalf("expected trading_mode live, got %q", cfg.TradingMode)
+	}
+	if cfg.BuilderSyncInterval != 2*time.Minute {
+		t.Fatalf("expected builder_sync_interval 2m, got %v", cfg.BuilderSyncInterval)
 	}
 	if cfg.Paper.InitialBalanceUSDC != 2000 {
 		t.Fatalf("expected paper initial balance 2000, got %f", cfg.Paper.InitialBalanceUSDC)

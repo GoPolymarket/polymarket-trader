@@ -205,6 +205,7 @@ docker run --env-file .env -v ./config.yaml:/config.yaml:ro polymarket-trader
 ## Builder Program
 
 This bot integrates Polymarket's [Order Attribution](https://docs.polymarket.com/developers/builders/order-attribution) system. When builder credentials are configured, all orders include attribution headers that credit volume to your builder account for grant qualification.
+You can tune builder dashboard refresh cadence with `builder_sync_interval` (default `10m`).
 
 ## Development
 

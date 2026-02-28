@@ -21,6 +21,9 @@ func (c Config) Validate() error {
 	if c.Paper.SlippageBps < 0 {
 		return fmt.Errorf("paper.slippage_bps must be >= 0, got %f", c.Paper.SlippageBps)
 	}
+	if c.BuilderSyncInterval <= 0 {
+		return fmt.Errorf("builder_sync_interval must be > 0, got %s", c.BuilderSyncInterval)
+	}
 
 	if c.Risk.MaxOpenOrders <= 0 {
 		return fmt.Errorf("risk.max_open_orders must be > 0, got %d", c.Risk.MaxOpenOrders)

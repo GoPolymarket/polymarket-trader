@@ -9,13 +9,14 @@ import (
 )
 
 type Config struct {
-	PrivateKey        string `yaml:"private_key"`
-	APIKey            string `yaml:"api_key"`
-	APISecret         string `yaml:"api_secret"`
-	APIPassphrase     string `yaml:"api_passphrase"`
-	BuilderKey        string `yaml:"builder_key"`
-	BuilderSecret     string `yaml:"builder_secret"`
-	BuilderPassphrase string `yaml:"builder_passphrase"`
+	PrivateKey          string        `yaml:"private_key"`
+	APIKey              string        `yaml:"api_key"`
+	APISecret           string        `yaml:"api_secret"`
+	APIPassphrase       string        `yaml:"api_passphrase"`
+	BuilderKey          string        `yaml:"builder_key"`
+	BuilderSecret       string        `yaml:"builder_secret"`
+	BuilderPassphrase   string        `yaml:"builder_passphrase"`
+	BuilderSyncInterval time.Duration `yaml:"builder_sync_interval"`
 
 	ScanInterval      time.Duration `yaml:"scan_interval"`
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
@@ -107,11 +108,12 @@ type RiskConfig struct {
 
 func Default() Config {
 	return Config{
-		ScanInterval:      10 * time.Second,
-		HeartbeatInterval: 30 * time.Second,
-		DryRun:            true,
-		TradingMode:       "paper",
-		LogLevel:          "info",
+		ScanInterval:        10 * time.Second,
+		HeartbeatInterval:   30 * time.Second,
+		DryRun:              true,
+		TradingMode:         "paper",
+		LogLevel:            "info",
+		BuilderSyncInterval: 10 * time.Minute,
 		Maker: MakerConfig{
 			Enabled:              true,
 			AutoSelectTop:        2,

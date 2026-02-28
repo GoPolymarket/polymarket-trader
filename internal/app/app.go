@@ -189,7 +189,7 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 
 	// Phase 2.2: Builder volume tracker.
 	if dataClient != nil && cfg.BuilderKey != "" {
-		a.BuilderTracker = builder.NewVolumeTracker(dataClient, 10*time.Minute)
+		a.BuilderTracker = builder.NewVolumeTracker(dataClient, cfg.BuilderSyncInterval)
 	}
 
 	// Phase 1.4: Heartbeat client.
