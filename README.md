@@ -195,6 +195,7 @@ If `api.enabled=true`, the bot exposes runtime endpoints including:
 - `GET /api/pnl`
 - `GET /api/perf` (performance KPIs: total PnL, PnL/fill, fees, net after fees)
 - `GET /api/coach` (actionable "make more, lose less" guidance: risk mode, size multiplier, and prioritized actions)
+- `GET /api/sizing` (position sizing guidance from risk budget + historical edge, with market allocation weights)
 - `GET /api/insights` (market-level scorecards + focus/deprioritize recommendations for where to allocate capital)
 - `GET /api/execution-quality` (execution friction attribution: fee drag, edge vs cost, quality score, and optimization recommendations)
 - `GET /api/daily-report` (daily diagnosis: why profit/loss happened, tomorrow risk mode, and prioritized next actions)

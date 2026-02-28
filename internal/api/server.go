@@ -79,6 +79,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/pnl", s.handlePnL)
 	mux.HandleFunc("/api/perf", s.handlePerf)
 	mux.HandleFunc("/api/coach", s.handleCoach)
+	mux.HandleFunc("/api/sizing", s.handleSizing)
 	mux.HandleFunc("/api/insights", s.handleInsights)
 	mux.HandleFunc("/api/execution-quality", s.handleExecutionQuality)
 	mux.HandleFunc("/api/daily-report", s.handleDailyReport)
@@ -1089,6 +1090,158 @@ func buildExecutionQualityRecommendations(
 	return recs
 }
 
+type sizingAllocation struct {
+	AssetID   string  `json:"asset_id"`
+	WeightPct float64 `json:"weight_pct"`
+	Score     float64 `json:"score"`
+	Bucket    string  `json:"bucket"`
+}
+
+func buildSizingAllocation(scores []marketScore, limit int) []sizingAllocation {
+	if limit <= 0 || len(scores) == 0 {
+		return nil
+	}
+	if len(scores) < limit {
+		limit = len(scores)
+	}
+
+	top := scores[:limit]
+	weightBase := 0.0
+	for _, s := range top {
+		weightBase += math.Max(1, s.Score)
+	}
+	if weightBase <= 0 {
+		return nil
+	}
+
+	out := make([]sizingAllocation, 0, limit)
+	for _, s := range top {
+		weight := (math.Max(1, s.Score) / weightBase) * 100
+		out = append(out, sizingAllocation{
+			AssetID:   s.AssetID,
+			WeightPct: round2(weight),
+			Score:     s.Score,
+			Bucket:    s.Bucket,
+		})
+	}
+	return out
+}
+
+func calculateSizingBudget(
+	rs riskStatus,
+	riskMode string,
+	sizeMultiplier float64,
+	metrics executionQualityMetrics,
+	recentFills []execution.Fill,
+) (riskBudgetUSDC float64, perTradeUSDC float64, suggestedMaxOrderUSDC float64, recommendedTrades int) {
+	if !rs.canTrade || riskMode == "pause" {
+		return 0, 0, 0, 0
+	}
+
+	remaining := rs.remainingUSDC
+	if remaining <= 0 {
+		remaining = math.Max(10, averageFillNotional(recentFills)*5)
+	}
+
+	riskBudget := remaining * 0.20
+	if riskMode == "defensive" {
+		riskBudget *= 0.5
+	}
+
+	qualityAdj := 0.6 + metrics.QualityScore/250.0
+	if metrics.NetEdgeBps <= 0 {
+		qualityAdj *= 0.6
+	} else if metrics.NetEdgeBps >= 20 {
+		qualityAdj *= 1.1
+	}
+	riskBudget *= qualityAdj
+	if riskBudget > remaining {
+		riskBudget = remaining
+	}
+	if riskBudget < 0 {
+		riskBudget = 0
+	}
+
+	trades := 5
+	if riskMode == "defensive" {
+		trades = 3
+	}
+	if metrics.Fills < 10 && trades > 3 {
+		trades = 3
+	}
+
+	perTrade := 0.0
+	if trades > 0 {
+		perTrade = riskBudget / float64(trades)
+	}
+	avgNotional := averageFillNotional(recentFills)
+	if avgNotional <= 0 {
+		avgNotional = 5
+	}
+	orderCap := avgNotional * math.Max(0.8, 1.2*sizeMultiplier)
+	suggested := perTrade
+	if orderCap > 0 && suggested > orderCap {
+		suggested = orderCap
+	}
+	if suggested > riskBudget {
+		suggested = riskBudget
+	}
+
+	return riskBudget, perTrade, suggested, trades
+}
+
+func buildSizingActions(
+	canTrade bool,
+	blockedReasons []string,
+	riskMode string,
+	metrics executionQualityMetrics,
+	allocation []sizingAllocation,
+) []coachAction {
+	actions := make([]coachAction, 0, 6)
+	if !canTrade {
+		actions = append(actions, coachAction{
+			Code:     "pause_trading",
+			Severity: "critical",
+			Message:  fmt.Sprintf("Trading blocked by risk rules: %s", strings.Join(blockedReasons, ",")),
+		})
+	}
+	if riskMode == "defensive" {
+		actions = append(actions, coachAction{
+			Code:     "reduce_size",
+			Severity: "warn",
+			Message:  "Run defensive size mode until risk usage and edge recover.",
+		})
+	}
+	if metrics.NetEdgeBps <= 0 && metrics.Fills >= 10 {
+		actions = append(actions, coachAction{
+			Code:     "improve_selectivity",
+			Severity: "warn",
+			Message:  "Net edge is non-positive; tighten entry filters before scaling.",
+		})
+	}
+	if len(allocation) > 0 {
+		actions = append(actions, coachAction{
+			Code:     "focus_high_score_markets",
+			Severity: "info",
+			Message:  "Concentrate size on top-scoring markets in the allocation plan.",
+		})
+	} else {
+		actions = append(actions, coachAction{
+			Code:     "collect_market_data",
+			Severity: "info",
+			Message:  "Market sample is insufficient; gather more fills before concentration.",
+		})
+	}
+	if len(actions) == 0 {
+		actions = append(actions, coachAction{
+			Code:     "maintain_plan",
+			Severity: "info",
+			Message:  "Sizing inputs are healthy; keep current discipline.",
+		})
+	}
+	return uniqueCoachActions(actions)
+}
+
 func pnlOutcome(netPnL float64) string {
 	if netPnL > 0 {
 		return "profit"
@@ -1728,6 +1881,71 @@ func (s *Server) handleCoach(w http.ResponseWriter, _ *http.Request) {
 			"suggested_max_order_usdc": round2(suggestedOrderUSDC),
 		},
 		"actions": actions,
+	})
+}
+
+// GET /api/sizing — risk-budget-based position sizing guidance.
+func (s *Server) handleSizing(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	riskMode, sizeMultiplier := chooseSizingMode(
+		rs.canTrade,
+		rs.usagePct,
+		totalPnL,
+		snap.ConsecutiveLosses,
+		snap.MaxConsecutiveLosses,
+	)
+
+	recentFills := s.appState.RecentFills(200)
+	metrics := calculateExecutionQualityMetrics(
+		mode,
+		fills,
+		totalPnL,
+		s.appState.PaperSnapshot(),
+		recentFills,
+	)
+	scores := buildMarketScores(s.appState.TrackedPositions())
+	allocation := buildSizingAllocation(scores, 3)
+	riskBudget, perTrade, suggestedMaxOrder, recommendedTrades := calculateSizingBudget(
+		rs,
+		riskMode,
+		sizeMultiplier,
+		metrics,
+		recentFills,
+	)
+	actions := buildSizingActions(rs.canTrade, rs.blockedReasons, riskMode, metrics, allocation)
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":    generatedAt,
+		"trading_mode":    mode,
+		"can_trade":       rs.canTrade,
+		"blocked_reasons": rs.blockedReasons,
+		"risk_mode":       riskMode,
+		"size_multiplier": sizeMultiplier,
+		"inputs": map[string]interface{}{
+			"daily_loss_limit_usdc":     snap.DailyLossLimitUSDC,
+			"daily_loss_remaining_usdc": rs.remainingUSDC,
+			"daily_loss_used_pct":       rs.usagePct,
+			"fills":                     fills,
+			"total_pnl_usdc":            round2(totalPnL),
+			"pnl_per_fill_usdc":         round2(metrics.PnLPerFillUSDC),
+			"net_edge_bps":              round2(metrics.NetEdgeBps),
+			"quality_score":             round2(metrics.QualityScore),
+		},
+		"budget": map[string]interface{}{
+			"risk_budget_usdc":           round2(riskBudget),
+			"recommended_trades":         recommendedTrades,
+			"recommended_per_trade_usdc": round2(perTrade),
+			"suggested_max_order_usdc":   round2(suggestedMaxOrder),
+		},
+		"allocation": allocation,
+		"actions":    actions,
 	})
 }
 

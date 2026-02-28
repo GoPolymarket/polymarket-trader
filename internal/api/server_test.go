@@ -748,6 +748,179 @@ func TestHandleGrantPackageMarkdown(t *testing.T) {
 	}
 }
 
+func TestHandleSizingNormal(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       25,
+		pnl:         6.0,
+		unrealPnL:   0.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -2.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    0,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.4,
+			TotalVolumeUSDC: 280.0,
+			TotalTrades:     25,
+		},
+		positions: map[string]execution.Position{
+			"asset-top":  {AssetID: "asset-top", RealizedPnL: 4.0, TotalFills: 12},
+			"asset-mid":  {AssetID: "asset-mid", RealizedPnL: 1.0, TotalFills: 8},
+			"asset-loss": {AssetID: "asset-loss", RealizedPnL: -0.8, TotalFills: 5},
+		},
+		recentFills: []execution.Fill{
+			{AssetID: "asset-top", Side: "BUY", Price: 0.50, Size: 20},  // 10 usdc
+			{AssetID: "asset-mid", Side: "SELL", Price: 0.40, Size: 15}, // 6 usdc
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sizing", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != true {
+		t.Fatalf("expected can_trade=true, got %v", resp["can_trade"])
+	}
+	if resp["risk_mode"] != "normal" {
+		t.Fatalf("expected risk_mode=normal, got %v", resp["risk_mode"])
+	}
+
+	budget, ok := resp["budget"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected budget object, got %T", resp["budget"])
+	}
+	if budget["risk_budget_usdc"].(float64) <= 0 {
+		t.Fatalf("expected positive risk_budget_usdc, got %v", budget["risk_budget_usdc"])
+	}
+	if budget["suggested_max_order_usdc"].(float64) <= 0 {
+		t.Fatalf("expected positive suggested_max_order_usdc, got %v", budget["suggested_max_order_usdc"])
+	}
+
+	allocation, ok := resp["allocation"].([]interface{})
+	if !ok || len(allocation) == 0 {
+		t.Fatalf("expected non-empty allocation, got %v", resp["allocation"])
+	}
+	top := allocation[0].(map[string]interface{})
+	if top["asset_id"] != "asset-top" {
+		t.Fatalf("expected top allocation asset-top, got %v", top["asset_id"])
+	}
+
+	actions, ok := resp["actions"].([]interface{})
+	if !ok {
+		t.Fatalf("expected actions list, got %T", resp["actions"])
+	}
+	if !containsActionCode(actions, "focus_high_score_markets") {
+		t.Fatalf("expected focus_high_score_markets action, got %v", actions)
+	}
+}
+
+func TestHandleSizingDefensive(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       12,
+		pnl:         -1.0,
+		unrealPnL:   0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -18.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    1,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.3,
+			TotalVolumeUSDC: 150.0,
+			TotalTrades:     12,
+		},
+		positions: map[string]execution.Position{
+			"asset-a": {AssetID: "asset-a", RealizedPnL: 0.5, TotalFills: 7},
+			"asset-b": {AssetID: "asset-b", RealizedPnL: -1.2, TotalFills: 5},
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sizing", nil)
+	w := httptest.NewRecorder()
+	s.handleSizing(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["risk_mode"] != "defensive" {
+		t.Fatalf("expected risk_mode=defensive, got %v", resp["risk_mode"])
+	}
+	if resp["size_multiplier"].(float64) != 0.5 {
+		t.Fatalf("expected size_multiplier=0.5, got %v", resp["size_multiplier"])
+	}
+	actions := resp["actions"].([]interface{})
+	if !containsActionCode(actions, "reduce_size") {
+		t.Fatalf("expected reduce_size action, got %v", actions)
+	}
+}
+
+func TestHandleSizingPaused(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       8,
+		pnl:         1.0,
+		riskSnapshot: risk.Snapshot{
+			EmergencyStop:        true,
+			DailyPnL:             -30.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    3,
+			MaxConsecutiveLosses: 3,
+			InCooldown:           true,
+			CooldownRemaining:    3 * time.Minute,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.2,
+			TotalVolumeUSDC: 100,
+			TotalTrades:     8,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sizing", nil)
+	w := httptest.NewRecorder()
+	s.handleSizing(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != false {
+		t.Fatalf("expected can_trade=false, got %v", resp["can_trade"])
+	}
+	if resp["risk_mode"] != "pause" {
+		t.Fatalf("expected risk_mode=pause, got %v", resp["risk_mode"])
+	}
+	budget := resp["budget"].(map[string]interface{})
+	if budget["risk_budget_usdc"].(float64) != 0 {
+		t.Fatalf("expected risk_budget_usdc=0, got %v", budget["risk_budget_usdc"])
+	}
+	actions := resp["actions"].([]interface{})
+	if !containsActionCode(actions, "pause_trading") {
+		t.Fatalf("expected pause_trading action, got %v", actions)
+	}
+}
+
 func TestHandleCoachNormal(t *testing.T) {
 	state := &mockAppState{
 		tradingMode: "paper",
