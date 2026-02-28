@@ -462,6 +462,13 @@ func TestHandleStageReportJSON(t *testing.T) {
 	if kpis["net_edge_bps"] == nil {
 		t.Fatal("expected net_edge_bps")
 	}
+	uplift, ok := resp["profit_uplift"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected profit_uplift object, got %T", resp["profit_uplift"])
+	}
+	if uplift["priority_action_code"] == "" {
+		t.Fatalf("expected priority_action_code, got %v", uplift["priority_action_code"])
+	}
 
 	narrative, ok := resp["narrative"].(map[string]interface{})
 	if !ok {
@@ -524,6 +531,9 @@ func TestHandleStageReportMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(body, "Evidence ID:") {
 		t.Fatalf("expected evidence id line, got %q", body)
+	}
+	if !strings.Contains(body, "Profit Uplift") {
+		t.Fatalf("expected profit uplift section, got %q", body)
 	}
 }
 
@@ -635,6 +645,12 @@ func TestHandleStageReportCSV(t *testing.T) {
 	if col["checksum_sha256"] == "" {
 		t.Fatal("expected checksum_sha256")
 	}
+	if col["profit_uplift_total_usdc"] == "" {
+		t.Fatal("expected profit_uplift_total_usdc")
+	}
+	if col["profit_uplift_priority_action"] == "" {
+		t.Fatal("expected profit_uplift_priority_action")
+	}
 }
 
 func TestHandleGrantPackageJSON(t *testing.T) {
@@ -693,6 +709,13 @@ func TestHandleGrantPackageJSON(t *testing.T) {
 	if !containsArtifactName(artifacts, "grant_report_csv") {
 		t.Fatalf("expected grant_report_csv artifact, got %v", artifacts)
 	}
+	profitCase, ok := resp["profit_case"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected profit_case object, got %T", resp["profit_case"])
+	}
+	if profitCase["priority_action_code"] == "" {
+		t.Fatalf("expected profit_case.priority_action_code, got %v", profitCase["priority_action_code"])
+	}
 
 	milestones, ok := resp["milestones"].([]interface{})
 	if !ok || len(milestones) == 0 {
@@ -745,6 +768,9 @@ func TestHandleGrantPackageMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(body, "## Artifacts") {
 		t.Fatalf("expected artifacts section, got %q", body)
+	}
+	if !strings.Contains(body, "## Profit Uplift Case") {
+		t.Fatalf("expected profit uplift markdown section, got %q", body)
 	}
 }
 

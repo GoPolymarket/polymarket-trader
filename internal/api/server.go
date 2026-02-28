@@ -1688,11 +1688,19 @@ func buildGrantManifestChecksum(
 	packageID string,
 	window stageWindow,
 	evidence stageEvidence,
+	profitUplift executionProfitUplift,
 	artifacts []grantArtifact,
 	milestones []grantMilestone,
 ) string {
-	parts := make([]string, 0, 5+len(artifacts)+len(milestones))
+	parts := make([]string, 0, 12+len(artifacts)+len(milestones))
 	parts = append(parts, "grant-package-v1", packageID, window.label, strconv.Itoa(window.days), evidence.ID, evidence.ChecksumSHA256)
+	parts = append(parts,
+		fmt.Sprintf("%.6f", profitUplift.EstimatedLossUSDC.TotalLossUSDC),
+		fmt.Sprintf("%.6f", profitUplift.TotalPotentialUpliftUSDC),
+		fmt.Sprintf("%.6f", profitUplift.ProjectedNetPnLAfterFeesUSDC),
+		profitUplift.PriorityActionCode,
+		profitUplift.ModelConfidence,
+	)
 	for _, a := range artifacts {
 		parts = append(parts, a.Name+"|"+a.Path+"|"+a.Purpose+"|"+strconv.FormatBool(a.Required))
 	}
@@ -1751,6 +1759,7 @@ func renderStageReportMarkdown(
 	kpis map[string]interface{},
 	strengths []string,
 	risks []string,
+	profitUplift executionProfitUplift,
 	actions []coachAction,
 ) string {
 	totalPnL, _ := kpis["total_pnl_usdc"].(float64)
@@ -1775,6 +1784,19 @@ func renderStageReportMarkdown(
 	b.WriteString(fmt.Sprintf("- Net PnL After Fees (USDC): %.2f\n", netPnL))
 	b.WriteString(fmt.Sprintf("- Net Edge (bps): %.2f\n", netEdge))
 	b.WriteString(fmt.Sprintf("- Fee Rate (bps): %.2f\n\n", feeRate))
+
+	b.WriteString("## Profit Uplift\n")
+	b.WriteString(fmt.Sprintf("- Estimated Total Loss (USDC): %.2f\n", profitUplift.EstimatedLossUSDC.TotalLossUSDC))
+	b.WriteString(fmt.Sprintf("- Potential Uplift (USDC): %.2f\n", profitUplift.TotalPotentialUpliftUSDC))
+	b.WriteString(fmt.Sprintf("- Projected Net PnL After Fees (USDC): %.2f\n", profitUplift.ProjectedNetPnLAfterFeesUSDC))
+	b.WriteString(fmt.Sprintf("- Priority Action Code: %s\n", profitUplift.PriorityActionCode))
+	b.WriteString(fmt.Sprintf("- Model Confidence: %s\n", profitUplift.ModelConfidence))
+	if len(profitUplift.Scenarios) > 0 {
+		top := profitUplift.Scenarios[0]
+		b.WriteString(fmt.Sprintf("- Top Scenario: %s (+%.2f USDC)\n\n", top.Code, top.EstimatedUpliftUSDC))
+	} else {
+		b.WriteString("- Top Scenario: none\n\n")
+	}
 
 	b.WriteString("## Strengths\n")
 	for _, s := range strengths {
@@ -1809,6 +1831,7 @@ func renderGrantPackageMarkdown(
 	mode string,
 	grantReadinessScore int,
 	evidence stageEvidence,
+	profitUplift executionProfitUplift,
 	artifacts []grantArtifact,
 	milestones []grantMilestone,
 	manifestChecksum string,
@@ -1823,6 +1846,19 @@ func renderGrantPackageMarkdown(
 	b.WriteString(fmt.Sprintf("- Stage Evidence ID: %s\n", evidence.ID))
 	b.WriteString(fmt.Sprintf("- Stage Checksum (SHA256): %s\n", evidence.ChecksumSHA256))
 	b.WriteString(fmt.Sprintf("- Manifest Checksum (SHA256): %s\n\n", manifestChecksum))
+
+	b.WriteString("## Profit Uplift Case\n")
+	b.WriteString(fmt.Sprintf("- Estimated Total Loss (USDC): %.2f\n", profitUplift.EstimatedLossUSDC.TotalLossUSDC))
+	b.WriteString(fmt.Sprintf("- Potential Uplift (USDC): %.2f\n", profitUplift.TotalPotentialUpliftUSDC))
+	b.WriteString(fmt.Sprintf("- Projected Net PnL After Fees (USDC): %.2f\n", profitUplift.ProjectedNetPnLAfterFeesUSDC))
+	b.WriteString(fmt.Sprintf("- Priority Action Code: %s\n", profitUplift.PriorityActionCode))
+	b.WriteString(fmt.Sprintf("- Confidence: %s\n", profitUplift.ModelConfidence))
+	if len(profitUplift.Scenarios) > 0 {
+		top := profitUplift.Scenarios[0]
+		b.WriteString(fmt.Sprintf("- Top Scenario: %s (+%.2f USDC)\n\n", top.Code, top.EstimatedUpliftUSDC))
+	} else {
+		b.WriteString("- Top Scenario: none\n\n")
+	}
 
 	b.WriteString("## Milestones\n")
 	for _, m := range milestones {
@@ -1891,6 +1927,9 @@ func (s *Server) writeStageReportCSV(
 	builderFresh bool,
 	riskTradable bool,
 	hasTradingActivity bool,
+	profitUpliftTotalUSDC float64,
+	profitUpliftPriorityAction string,
+	profitUpliftConfidence string,
 	actionsCount int,
 ) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -1914,6 +1953,9 @@ func (s *Server) writeStageReportCSV(
 		"builder_fresh",
 		"risk_tradable",
 		"has_trading_activity",
+		"profit_uplift_total_usdc",
+		"profit_uplift_priority_action",
+		"profit_uplift_confidence",
 		"next_actions_count",
 	}
 	record := []string{
@@ -1935,6 +1977,9 @@ func (s *Server) writeStageReportCSV(
 		strconv.FormatBool(builderFresh),
 		strconv.FormatBool(riskTradable),
 		strconv.FormatBool(hasTradingActivity),
+		fmt.Sprintf("%.6f", profitUpliftTotalUSDC),
+		profitUpliftPriorityAction,
+		profitUpliftConfidence,
 		strconv.Itoa(actionsCount),
 	}
 	if err := cw.Write(header); err != nil {
@@ -2457,6 +2502,8 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 
 	recentFills := s.appState.RecentFills(200)
 	metrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, paperSnap, recentFills)
+	breakdown := calculateExecutionLossBreakdown(metrics)
+	profitUplift := buildExecutionProfitUplift(metrics, breakdown)
 	grantReadinessScore := int(math.Round(float64(readinessScore)*0.6 + metrics.QualityScore*0.4))
 	if grantReadinessScore < 0 {
 		grantReadinessScore = 0
@@ -2528,6 +2575,9 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 			builder.fresh,
 			rs.canTrade,
 			hasTradingActivity,
+			profitUplift.TotalPotentialUpliftUSDC,
+			profitUplift.PriorityActionCode,
+			profitUplift.ModelConfidence,
 			len(actions),
 		)
 		return
@@ -2546,6 +2596,7 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 			kpis,
 			strengths,
 			risks,
+			profitUplift,
 			actions,
 		)
 		if _, err := w.Write([]byte(md)); err != nil {
@@ -2570,6 +2621,21 @@ func (s *Server) handleStageReport(w http.ResponseWriter, r *http.Request) {
 			"positive_net_edge":     metrics.NetEdgeBps > 0,
 		},
 		"kpis": kpis,
+		"profit_uplift": map[string]interface{}{
+			"estimated_loss_usdc": map[string]interface{}{
+				"fee_drag_usdc":         profitUplift.EstimatedLossUSDC.FeeDragUSDC,
+				"slippage_proxy_usdc":   profitUplift.EstimatedLossUSDC.SlippageProxyUSDC,
+				"selectivity_loss_usdc": profitUplift.EstimatedLossUSDC.SelectivityLossUSDC,
+				"avoidable_loss_usdc":   profitUplift.EstimatedLossUSDC.AvoidableLossUSDC,
+				"total_loss_usdc":       profitUplift.EstimatedLossUSDC.TotalLossUSDC,
+			},
+			"scenarios":                         profitUplift.Scenarios,
+			"total_potential_uplift_usdc":       profitUplift.TotalPotentialUpliftUSDC,
+			"projected_net_pnl_after_fees_usdc": profitUplift.ProjectedNetPnLAfterFeesUSDC,
+			"priority_action_code":              profitUplift.PriorityActionCode,
+			"model_confidence":                  profitUplift.ModelConfidence,
+			"source_breakdown_total_loss_bps":   breakdown.TotalLossBps,
+		},
 		"builder": map[string]interface{}{
 			"configured":         builder.configured,
 			"daily_volume_count": builder.dailyVolumeCount,
@@ -2616,6 +2682,8 @@ func (s *Server) handleGrantPackage(w http.ResponseWriter, r *http.Request) {
 
 	recentFills := s.appState.RecentFills(200)
 	metrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, s.appState.PaperSnapshot(), recentFills)
+	breakdown := calculateExecutionLossBreakdown(metrics)
+	profitUplift := buildExecutionProfitUplift(metrics, breakdown)
 	grantReadinessScore := int(math.Round(float64(readinessScore)*0.6 + metrics.QualityScore*0.4))
 	if grantReadinessScore < 0 {
 		grantReadinessScore = 0
@@ -2643,7 +2711,7 @@ func (s *Server) handleGrantPackage(w http.ResponseWriter, r *http.Request) {
 	packageID := fmt.Sprintf("grant-%s-%s-%s", window.label, generatedAt.Format("20060102T150405Z"), evidence.ChecksumSHA256[:10])
 	artifacts := buildGrantArtifacts(window)
 	milestones := buildGrantMilestones()
-	manifestChecksum := buildGrantManifestChecksum(packageID, window, evidence, artifacts, milestones)
+	manifestChecksum := buildGrantManifestChecksum(packageID, window, evidence, profitUplift, artifacts, milestones)
 
 	if format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))); format == "markdown" || format == "md" {
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -2654,6 +2722,7 @@ func (s *Server) handleGrantPackage(w http.ResponseWriter, r *http.Request) {
 			mode,
 			grantReadinessScore,
 			evidence,
+			profitUplift,
 			artifacts,
 			milestones,
 			manifestChecksum,
@@ -2682,6 +2751,14 @@ func (s *Server) handleGrantPackage(w http.ResponseWriter, r *http.Request) {
 		},
 		"milestones": milestones,
 		"artifacts":  artifacts,
+		"profit_case": map[string]interface{}{
+			"estimated_total_loss_usdc":         profitUplift.EstimatedLossUSDC.TotalLossUSDC,
+			"total_potential_uplift_usdc":       profitUplift.TotalPotentialUpliftUSDC,
+			"projected_net_pnl_after_fees_usdc": profitUplift.ProjectedNetPnLAfterFeesUSDC,
+			"priority_action_code":              profitUplift.PriorityActionCode,
+			"model_confidence":                  profitUplift.ModelConfidence,
+			"evidence_ref":                      "/api/execution-quality",
+		},
 		"manifest": map[string]interface{}{
 			"checksum_sha256":       manifestChecksum,
 			"generated_at":          generatedAt,
