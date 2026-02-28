@@ -817,9 +817,19 @@ func TestHandleTelegramTemplates(t *testing.T) {
 	if daily["can_trade"] != true {
 		t.Fatalf("expected daily.can_trade=true, got %v", daily["can_trade"])
 	}
+	profitFocus, ok := daily["profit_focus"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected daily.profit_focus object, got %T", daily["profit_focus"])
+	}
+	if profitFocus["priority_action_code"] == "" {
+		t.Fatalf("expected daily.profit_focus.priority_action_code, got %v", profitFocus["priority_action_code"])
+	}
 	textDaily, _ := daily["text_html"].(string)
 	if !strings.Contains(textDaily, "Daily Trading Coach") {
 		t.Fatalf("expected daily template title, got %q", textDaily)
+	}
+	if !strings.Contains(textDaily, "Profit Focus") {
+		t.Fatalf("expected profit focus section in daily template, got %q", textDaily)
 	}
 
 	weekly, ok := resp["weekly_template"].(map[string]interface{})

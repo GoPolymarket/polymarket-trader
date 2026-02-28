@@ -1891,8 +1891,14 @@ func renderTelegramDailyTemplate(
 	fills int,
 	actions []string,
 	riskHints []string,
+	priorityActionCode string,
+	estimatedUpliftUSDC float64,
+	modelConfidence string,
 ) string {
 	data := telegramtmpl.BuildDailyData(mode, canTrade, riskMode, netPnLAfterFees, fills, actions, riskHints)
+	data.PriorityActionCode = strings.TrimSpace(priorityActionCode)
+	data.EstimatedUpliftUSDC = round2(estimatedUpliftUSDC)
+	data.ModelConfidence = strings.TrimSpace(modelConfidence)
 	return telegramtmpl.RenderDailyHTML(data)
 }
 
@@ -2407,6 +2413,7 @@ func (s *Server) handleTelegramTemplates(w http.ResponseWriter, r *http.Request)
 		recentFills,
 	)
 	breakdown := calculateExecutionLossBreakdown(metrics)
+	profitUplift := buildExecutionProfitUplift(metrics, breakdown)
 	scores := buildMarketScores(s.appState.TrackedPositions())
 	bestMarket := ""
 	bestScore := 0.0
@@ -2443,6 +2450,9 @@ func (s *Server) handleTelegramTemplates(w http.ResponseWriter, r *http.Request)
 		fills,
 		actionMessages,
 		riskHints,
+		profitUplift.PriorityActionCode,
+		profitUplift.TotalPotentialUpliftUSDC,
+		profitUplift.ModelConfidence,
 	)
 	weeklyText := renderTelegramWeeklyTemplate(
 		window,
@@ -2467,7 +2477,13 @@ func (s *Server) handleTelegramTemplates(w http.ResponseWriter, r *http.Request)
 			"risk_mode":  riskMode,
 			"actions":    actionMessages,
 			"risk_hints": riskHints,
-			"text_html":  dailyText,
+			"profit_focus": map[string]interface{}{
+				"priority_action_code":   profitUplift.PriorityActionCode,
+				"estimated_uplift_usdc":  profitUplift.TotalPotentialUpliftUSDC,
+				"projected_net_pnl_usdc": profitUplift.ProjectedNetPnLAfterFeesUSDC,
+				"model_confidence":       profitUplift.ModelConfidence,
+			},
+			"text_html": dailyText,
 		},
 		"weekly_template": map[string]interface{}{
 			"summary": map[string]interface{}{

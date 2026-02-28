@@ -77,3 +77,29 @@ func TestBuildDailyDataLimitsActions(t *testing.T) {
 		t.Fatalf("expected status PAUSE, got %s", data.Status)
 	}
 }
+
+func TestRenderDailyHTMLIncludesProfitFocus(t *testing.T) {
+	data := BuildDailyData(
+		"paper",
+		true,
+		"normal",
+		2.1,
+		28,
+		[]string{"Keep discipline"},
+		nil,
+	)
+	data.PriorityActionCode = "reduce_fee_drag"
+	data.EstimatedUpliftUSDC = 1.23
+	data.ModelConfidence = "medium"
+
+	msg := RenderDailyHTML(data)
+	if !strings.Contains(msg, "Profit Focus") {
+		t.Fatalf("expected profit focus section, got %q", msg)
+	}
+	if !strings.Contains(msg, "reduce_fee_drag") {
+		t.Fatalf("expected priority action in message, got %q", msg)
+	}
+	if !strings.Contains(msg, "1.23 USDC") {
+		t.Fatalf("expected uplift amount in message, got %q", msg)
+	}
+}

@@ -282,6 +282,9 @@ func TestSendScheduledTelegramReportsDailyAndWeekly(t *testing.T) {
 	if mockN.lastDailyTemplate == "" || !strings.Contains(mockN.lastDailyTemplate, "Daily Trading Coach") {
 		t.Fatalf("expected daily template text, got %q", mockN.lastDailyTemplate)
 	}
+	if !strings.Contains(mockN.lastDailyTemplate, "Profit Focus") {
+		t.Fatalf("expected profit focus in daily template, got %q", mockN.lastDailyTemplate)
+	}
 	if mockN.lastWeeklyTemplate == "" || !strings.Contains(mockN.lastWeeklyTemplate, "Weekly Trading Review") {
 		t.Fatalf("expected weekly template text, got %q", mockN.lastWeeklyTemplate)
 	}

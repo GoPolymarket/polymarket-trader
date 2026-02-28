@@ -14,6 +14,9 @@ type DailyData struct {
 	Fills               int
 	Actions             []string
 	RiskHints           []string
+	PriorityActionCode  string
+	EstimatedUpliftUSDC float64
+	ModelConfidence     string
 }
 
 // WeeklyData describes the data required to render a weekly Telegram review message.
@@ -105,6 +108,14 @@ func RenderDailyHTML(d DailyData) string {
 		b.WriteString("\n<b>Risk Hints</b>\n")
 		for _, h := range d.RiskHints {
 			b.WriteString("- " + h + "\n")
+		}
+	}
+	if strings.TrimSpace(d.PriorityActionCode) != "" {
+		b.WriteString("\n<b>Profit Focus</b>\n")
+		b.WriteString("- Priority Action: " + strings.TrimSpace(d.PriorityActionCode) + "\n")
+		b.WriteString(fmt.Sprintf("- Estimated Uplift: %.2f USDC\n", d.EstimatedUpliftUSDC))
+		if strings.TrimSpace(d.ModelConfidence) != "" {
+			b.WriteString("- Confidence: " + strings.TrimSpace(d.ModelConfidence) + "\n")
 		}
 	}
 	return strings.TrimSpace(b.String())

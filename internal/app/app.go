@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -1061,6 +1062,53 @@ func riskModeFromSnapshot(snap risk.Snapshot, totalPnL float64) string {
 	return "normal"
 }
 
+func profitFocusConfidence(fills int) string {
+	switch {
+	case fills >= 50:
+		return "high"
+	case fills >= 20:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func round2App(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+func estimateDailyProfitFocus(canTrade bool, riskMode string, fills int, netPnLAfterFees, feesPaid float64) (string, float64, string) {
+	action := "maintain_execution_discipline"
+	switch {
+	case !canTrade:
+		action = "pause_trading"
+	case strings.EqualFold(riskMode, "DEFENSIVE"):
+		action = "reduce_size"
+	case netPnLAfterFees <= 0:
+		action = "improve_selectivity"
+	case fills < 20:
+		action = "increase_sample_size"
+	case feesPaid > 0:
+		action = "reduce_fee_drag"
+	}
+
+	estimatedUplift := 0.0
+	switch action {
+	case "reduce_fee_drag":
+		estimatedUplift = feesPaid * 0.3
+	case "improve_selectivity":
+		estimatedUplift = math.Abs(netPnLAfterFees) * 0.5
+	case "reduce_size":
+		estimatedUplift = math.Abs(netPnLAfterFees) * 0.2
+	case "increase_sample_size":
+		estimatedUplift = math.Max(0.5, math.Abs(netPnLAfterFees)*0.1)
+	}
+	if estimatedUplift < 0 {
+		estimatedUplift = 0
+	}
+	return action, round2App(estimatedUplift), profitFocusConfidence(fills)
+}
+
 func (a *App) bestRealizedMarket() string {
 	positions := a.tracker.Positions()
 	bestAsset := ""
@@ -1122,6 +1170,10 @@ func (a *App) buildDailyTelegramTemplate() string {
 	actions := telegramtmpl.BuildDailyActions(adviceIn)
 	hints := telegramtmpl.BuildRiskHints(adviceIn)
 	data := telegramtmpl.BuildDailyData(mode, canTrade, riskMode, netPnL, fills, actions, hints)
+	priorityAction, upliftUSDC, confidence := estimateDailyProfitFocus(canTrade, riskMode, fills, netPnL, fees)
+	data.PriorityActionCode = priorityAction
+	data.EstimatedUpliftUSDC = upliftUSDC
+	data.ModelConfidence = confidence
 	// Preserve explicit status from runtime guardrails for this scheduled push path.
 	data.Status = status
 	return telegramtmpl.RenderDailyHTML(data)
