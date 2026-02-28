@@ -11,6 +11,37 @@ import (
 	"github.com/GoPolymarket/polymarket-trader/internal/config"
 )
 
+type mockNotifier struct {
+	riskCooldownCalls int
+	lastConsecutive   int
+	lastMax           int
+	lastCooldown      time.Duration
+}
+
+func (m *mockNotifier) NotifyFill(_ context.Context, _ string, _ string, _ float64, _ float64) error {
+	return nil
+}
+
+func (m *mockNotifier) NotifyStopLoss(_ context.Context, _ string, _ float64) error {
+	return nil
+}
+
+func (m *mockNotifier) NotifyEmergencyStop(_ context.Context) error {
+	return nil
+}
+
+func (m *mockNotifier) NotifyDailySummary(_ context.Context, _ float64, _ int, _ float64) error {
+	return nil
+}
+
+func (m *mockNotifier) NotifyRiskCooldown(_ context.Context, consecutiveLosses, maxConsecutiveLosses int, cooldownRemaining time.Duration) error {
+	m.riskCooldownCalls++
+	m.lastConsecutive = consecutiveLosses
+	m.lastMax = maxConsecutiveLosses
+	m.lastCooldown = cooldownRemaining
+	return nil
+}
+
 func testConfig() config.Config {
 	cfg := config.Default()
 	cfg.DryRun = true
@@ -176,6 +207,39 @@ func TestRiskSyncTracksRealizedDeltas(t *testing.T) {
 	}
 	if err := a.riskMgr.Allow("asset-1", 1); err == nil {
 		t.Fatal("expected risk manager to block new orders during cooldown")
+	}
+}
+
+func TestRiskSyncSendsCooldownNotification(t *testing.T) {
+	cfg := testConfig()
+	cfg.Risk.MaxConsecutiveLosses = 2
+	cfg.Risk.ConsecutiveLossCooldown = time.Minute
+	cfg.Risk.MaxDailyLossUSDC = 500
+	cfg.Risk.AccountCapitalUSDC = 1000
+	cfg.Risk.MaxDailyLossPct = 0.05
+
+	a := New(cfg, nil, nil, nil, nil, nil, nil)
+	mockN := &mockNotifier{}
+	a.notifier = mockN
+
+	// First realized loss.
+	a.tracker.ProcessTradeEvent(ws.TradeEvent{ID: "b-1", AssetID: "asset-1", Side: "BUY", Price: "0.60", Size: "10"})
+	a.tracker.ProcessTradeEvent(ws.TradeEvent{ID: "s-1", AssetID: "asset-1", Side: "SELL", Price: "0.50", Size: "10"})
+	a.riskSync(context.Background())
+
+	// Second realized loss should trigger cooldown + notification.
+	a.tracker.ProcessTradeEvent(ws.TradeEvent{ID: "b-2", AssetID: "asset-1", Side: "BUY", Price: "0.70", Size: "10"})
+	a.tracker.ProcessTradeEvent(ws.TradeEvent{ID: "s-2", AssetID: "asset-1", Side: "SELL", Price: "0.60", Size: "10"})
+	a.riskSync(context.Background())
+
+	if mockN.riskCooldownCalls != 1 {
+		t.Fatalf("expected 1 cooldown notification, got %d", mockN.riskCooldownCalls)
+	}
+	if mockN.lastConsecutive != 2 || mockN.lastMax != 2 {
+		t.Fatalf("unexpected cooldown notification payload: consecutive=%d max=%d", mockN.lastConsecutive, mockN.lastMax)
+	}
+	if mockN.lastCooldown <= 0 {
+		t.Fatalf("expected positive cooldown remaining, got %v", mockN.lastCooldown)
 	}
 }
 

@@ -92,3 +92,14 @@ func (n *Notifier) NotifyDailySummary(ctx context.Context, pnl float64, fills in
 	msg := fmt.Sprintf("<b>Daily Summary</b>\nPnL: %.2f USDC\nFills: %d\nVolume: %.2f USDC", pnl, fills, volume)
 	return n.Send(ctx, msg)
 }
+
+// NotifyRiskCooldown sends a risk cooldown alert after a loss streak.
+func (n *Notifier) NotifyRiskCooldown(ctx context.Context, consecutiveLosses, maxConsecutiveLosses int, cooldownRemaining time.Duration) error {
+	msg := fmt.Sprintf(
+		"<b>Risk Cooldown</b>\nConsecutive Losses: %d/%d\nCooldown Remaining: %.0fs",
+		consecutiveLosses,
+		maxConsecutiveLosses,
+		cooldownRemaining.Seconds(),
+	)
+	return n.Send(ctx, msg)
+}

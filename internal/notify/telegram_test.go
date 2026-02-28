@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -145,5 +146,28 @@ func TestNotifyDailySummaryDisabled(t *testing.T) {
 	n := NewNotifier("", "")
 	if err := n.NotifyDailySummary(context.Background(), 1.5, 10, 100); err != nil {
 		t.Fatalf("disabled notify should succeed: %v", err)
+	}
+}
+
+func TestNotifyRiskCooldownSuccess(t *testing.T) {
+	var receivedText string
+	client := testHTTPClient(func(r *http.Request) (*http.Response, error) {
+		receivedText = r.URL.Query().Get("text")
+		return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+	})
+
+	n := &Notifier{
+		botToken:   "test-token",
+		chatID:     "test-chat",
+		httpClient: client,
+		enabled:    true,
+		baseURL:    "https://telegram.test/sendMessage",
+	}
+
+	if err := n.NotifyRiskCooldown(context.Background(), 3, 3, 2*time.Minute); err != nil {
+		t.Fatalf("notify cooldown: %v", err)
+	}
+	if !strings.Contains(receivedText, "Risk Cooldown") {
+		t.Fatalf("expected cooldown keyword in message, got: %s", receivedText)
 	}
 }

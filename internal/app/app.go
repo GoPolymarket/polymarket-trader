@@ -58,7 +58,7 @@ type App struct {
 	BuilderTracker *builder.VolumeTracker
 
 	// Phase 2.4: Telegram notifications.
-	notifier *notify.Notifier
+	notifier Notifier
 
 	activeOrders  map[string][]string
 	assetToMarket map[string]string // assetID → market/condition ID
@@ -83,6 +83,15 @@ type App struct {
 	running bool
 }
 
+// Notifier defines alert methods used by the trading app.
+type Notifier interface {
+	NotifyFill(ctx context.Context, assetID, side string, price, size float64) error
+	NotifyStopLoss(ctx context.Context, assetID string, pnl float64) error
+	NotifyEmergencyStop(ctx context.Context) error
+	NotifyDailySummary(ctx context.Context, pnl float64, fills int, volume float64) error
+	NotifyRiskCooldown(ctx context.Context, consecutiveLosses, maxConsecutiveLosses int, cooldownRemaining time.Duration) error
+}
+
 func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer auth.Signer, gammaClient gamma.Client, dataClient data.Client, rtdsClient rtds.Client) *App {
 	tracker := execution.NewTracker()
 	riskMgr := risk.New(risk.Config{
@@ -99,7 +108,7 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 	})
 
 	// Phase 2.4: Telegram notifier.
-	var notifier *notify.Notifier
+	var notifier Notifier
 	if cfg.Telegram.Enabled {
 		notifier = notify.NewNotifier(cfg.Telegram.BotToken, cfg.Telegram.ChatID)
 	}
@@ -934,6 +943,7 @@ func (a *App) riskSync(ctx context.Context) {
 		if currentRealized != 0 {
 			if a.riskMgr.RecordTradeResult(currentRealized) {
 				log.Printf("risk cooldown triggered: consecutive losses=%d", a.riskMgr.ConsecutiveLosses())
+				a.notifyRiskCooldown(ctx)
 			}
 		}
 		a.lastRealizedPnL = currentRealized
@@ -943,6 +953,7 @@ func (a *App) riskSync(ctx context.Context) {
 		if realizedDelta != 0 {
 			if a.riskMgr.RecordTradeResult(realizedDelta) {
 				log.Printf("risk cooldown triggered: consecutive losses=%d", a.riskMgr.ConsecutiveLosses())
+				a.notifyRiskCooldown(ctx)
 			}
 		}
 		a.lastRealizedPnL = currentRealized
@@ -995,6 +1006,18 @@ func (a *App) riskSync(ctx context.Context) {
 		log.Println("EMERGENCY: max drawdown exceeded, triggering emergency stop")
 		a.SetEmergencyStop(true)
 	}
+}
+
+func (a *App) notifyRiskCooldown(ctx context.Context) {
+	if a.notifier == nil {
+		return
+	}
+	_ = a.notifier.NotifyRiskCooldown(
+		ctx,
+		a.riskMgr.ConsecutiveLosses(),
+		a.cfg.Risk.MaxConsecutiveLosses,
+		a.riskMgr.CooldownRemaining(),
+	)
 }
 
 func (a *App) resetDailyRisk() {
