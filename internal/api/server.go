@@ -78,6 +78,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/perf", s.handlePerf)
 	mux.HandleFunc("/api/coach", s.handleCoach)
 	mux.HandleFunc("/api/insights", s.handleInsights)
+	mux.HandleFunc("/api/execution-quality", s.handleExecutionQuality)
 	mux.HandleFunc("/api/grant-report", s.handleGrantReport)
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/orders", s.handleOrders)
@@ -879,6 +880,163 @@ func buildInsightRecommendations(
 	return recs
 }
 
+type executionQualityMetrics struct {
+	Fills               int     `json:"fills"`
+	TradesConsidered    int     `json:"trades_considered"`
+	VolumeUSDC          float64 `json:"volume_usdc"`
+	AvgFillNotionalUSDC float64 `json:"avg_fill_notional_usdc"`
+	GrossPnLUSDC        float64 `json:"gross_pnl_usdc"`
+	FeesPaidUSDC        float64 `json:"fees_paid_usdc"`
+	NetPnLAfterFeesUSDC float64 `json:"net_pnl_after_fees_usdc"`
+	PnLPerFillUSDC      float64 `json:"pnl_per_fill_usdc"`
+	FeePerTradeUSDC     float64 `json:"fee_per_trade_usdc"`
+	GrossEdgeBps        float64 `json:"gross_edge_bps"`
+	NetEdgeBps          float64 `json:"net_edge_bps"`
+	FeeRateBps          float64 `json:"fee_rate_bps"`
+	FrictionBps         float64 `json:"friction_bps"`
+	QualityScore        float64 `json:"quality_score"`
+}
+
+func sumFillNotional(fills []execution.Fill) float64 {
+	total := 0.0
+	for _, f := range fills {
+		total += f.Price * f.Size
+	}
+	return total
+}
+
+func calculateExecutionQualityMetrics(
+	mode string,
+	fills int,
+	totalPnL float64,
+	paperSnap paper.Snapshot,
+	recentFills []execution.Fill,
+) executionQualityMetrics {
+	fees := 0.0
+	volume := 0.0
+	trades := fills
+	if mode == "paper" {
+		fees = paperSnap.FeesPaidUSDC
+		volume = paperSnap.TotalVolumeUSDC
+		if paperSnap.TotalTrades > 0 {
+			trades = paperSnap.TotalTrades
+		}
+	}
+
+	fallbackVolume := sumFillNotional(recentFills)
+	if volume <= 0 {
+		volume = fallbackVolume
+	}
+
+	pnlPerFill := 0.0
+	if fills > 0 {
+		pnlPerFill = totalPnL / float64(fills)
+	}
+	feePerTrade := 0.0
+	if trades > 0 {
+		feePerTrade = fees / float64(trades)
+	}
+	netPnL := totalPnL - fees
+	grossEdgeBps := 0.0
+	netEdgeBps := 0.0
+	feeRateBps := 0.0
+	if volume > 0 {
+		grossEdgeBps = totalPnL / volume * 10000
+		netEdgeBps = netPnL / volume * 10000
+		feeRateBps = fees / volume * 10000
+	}
+
+	score := 50.0
+	switch {
+	case netEdgeBps > 10:
+		score += 20
+	case netEdgeBps > 0:
+		score += 10
+	case netEdgeBps < 0:
+		score -= 15
+	}
+	if fills >= 10 {
+		if pnlPerFill > 0 {
+			score += 10
+		} else {
+			score -= 10
+		}
+	}
+	if feeRateBps >= 30 {
+		score -= 10
+	} else if feeRateBps > 0 && feeRateBps <= 15 {
+		score += 10
+	}
+
+	return executionQualityMetrics{
+		Fills:               fills,
+		TradesConsidered:    trades,
+		VolumeUSDC:          round2(volume),
+		AvgFillNotionalUSDC: round2(averageFillNotional(recentFills)),
+		GrossPnLUSDC:        round2(totalPnL),
+		FeesPaidUSDC:        round2(fees),
+		NetPnLAfterFeesUSDC: round2(netPnL),
+		PnLPerFillUSDC:      round2(pnlPerFill),
+		FeePerTradeUSDC:     round2(feePerTrade),
+		GrossEdgeBps:        round2(grossEdgeBps),
+		NetEdgeBps:          round2(netEdgeBps),
+		FeeRateBps:          round2(feeRateBps),
+		FrictionBps:         round2(grossEdgeBps - netEdgeBps),
+		QualityScore:        round2(clamp(score, 0, 100)),
+	}
+}
+
+func buildExecutionQualityRecommendations(
+	canTrade bool,
+	blockedReasons []string,
+	metrics executionQualityMetrics,
+) []coachAction {
+	recs := make([]coachAction, 0, 6)
+	if !canTrade {
+		recs = append(recs, coachAction{
+			Code:     "pause_trading",
+			Severity: "critical",
+			Message:  fmt.Sprintf("Trading blocked by risk rules: %s", strings.Join(blockedReasons, ",")),
+		})
+	}
+	if metrics.Fills < 20 {
+		recs = append(recs, coachAction{
+			Code:     "increase_sample_size",
+			Severity: "info",
+			Message:  "Collect at least 20 fills before increasing strategy throughput.",
+		})
+	}
+	if metrics.FeeRateBps > 0 && metrics.GrossEdgeBps <= metrics.FeeRateBps {
+		recs = append(recs, coachAction{
+			Code:     "reduce_churn",
+			Severity: "warn",
+			Message:  "Execution costs consume gross edge; reduce turnover and be more selective.",
+		})
+	}
+	if metrics.NetEdgeBps <= 0 && metrics.Fills >= 10 {
+		recs = append(recs, coachAction{
+			Code:     "improve_selectivity",
+			Severity: "warn",
+			Message:  "Net edge is non-positive; tighten entry filters before scaling size.",
+		})
+	}
+	if metrics.NetEdgeBps > metrics.FeeRateBps && metrics.NetEdgeBps > 0 {
+		recs = append(recs, coachAction{
+			Code:     "edge_above_friction",
+			Severity: "info",
+			Message:  "Net edge exceeds execution friction; current execution quality is healthy.",
+		})
+	}
+	if len(recs) == 0 {
+		recs = append(recs, coachAction{
+			Code:     "maintain_execution_discipline",
+			Severity: "info",
+			Message:  "Execution metrics look stable; keep discipline and monitor drift.",
+		})
+	}
+	return recs
+}
+
 // GET /api/risk — current risk guardrail status.
 func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 	snap := s.appState.RiskSnapshot()
@@ -1082,6 +1240,40 @@ func (s *Server) handleInsights(w http.ResponseWriter, _ *http.Request) {
 			"size_multiplier":     sizeMultiplier,
 			"daily_loss_used_pct": round2(rs.usagePct),
 		},
+	})
+}
+
+// GET /api/execution-quality — execution friction attribution and action hints.
+func (s *Server) handleExecutionQuality(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	_, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+
+	snap := s.appState.RiskSnapshot()
+	rs := buildRiskStatus(snap)
+	recentFills := s.appState.RecentFills(200)
+	metrics := calculateExecutionQualityMetrics(
+		mode,
+		fills,
+		totalPnL,
+		s.appState.PaperSnapshot(),
+		recentFills,
+	)
+	recommendations := buildExecutionQualityRecommendations(
+		rs.canTrade,
+		rs.blockedReasons,
+		metrics,
+	)
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at":    generatedAt,
+		"trading_mode":    mode,
+		"can_trade":       rs.canTrade,
+		"blocked_reasons": rs.blockedReasons,
+		"metrics":         metrics,
+		"recommendations": recommendations,
 	})
 }
 

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/csv"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -580,6 +581,10 @@ func containsActionCode(actions []interface{}, code string) bool {
 	return false
 }
 
+func approxEqual(a, b float64) bool {
+	return math.Abs(a-b) < 1e-6
+}
+
 func TestHandleInsightsScores(t *testing.T) {
 	state := &mockAppState{
 		fills:     22,
@@ -718,6 +723,162 @@ func TestHandleInsightsRiskBlocked(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected recommendations list, got %T", resp["recommendations"])
 	}
+	if !containsActionCode(recs, "pause_trading") {
+		t.Fatalf("expected pause_trading recommendation, got %v", recs)
+	}
+}
+
+func TestHandleExecutionQualityPaper(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       10,
+		pnl:         3.0,
+		unrealPnL:   -1.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -2.0,
+			DailyLossLimitUSDC: 20.0,
+		},
+		recentFills: []execution.Fill{
+			{AssetID: "asset-a", Side: "BUY", Price: 0.50, Size: 20},  // 10 USDC
+			{AssetID: "asset-b", Side: "SELL", Price: 0.25, Size: 20}, // 5 USDC
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.5,
+			TotalVolumeUSDC: 200.0,
+			TotalTrades:     10,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/execution-quality", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["trading_mode"] != "paper" {
+		t.Fatalf("expected trading_mode=paper, got %v", resp["trading_mode"])
+	}
+	if resp["can_trade"] != true {
+		t.Fatalf("expected can_trade=true, got %v", resp["can_trade"])
+	}
+
+	metrics, ok := resp["metrics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metrics object, got %T", resp["metrics"])
+	}
+	if !approxEqual(metrics["gross_edge_bps"].(float64), 100.0) {
+		t.Fatalf("expected gross_edge_bps=100, got %v", metrics["gross_edge_bps"])
+	}
+	if !approxEqual(metrics["net_edge_bps"].(float64), 75.0) {
+		t.Fatalf("expected net_edge_bps=75, got %v", metrics["net_edge_bps"])
+	}
+	if !approxEqual(metrics["fee_rate_bps"].(float64), 25.0) {
+		t.Fatalf("expected fee_rate_bps=25, got %v", metrics["fee_rate_bps"])
+	}
+	if !approxEqual(metrics["friction_bps"].(float64), 25.0) {
+		t.Fatalf("expected friction_bps=25, got %v", metrics["friction_bps"])
+	}
+	if !approxEqual(metrics["avg_fill_notional_usdc"].(float64), 7.5) {
+		t.Fatalf("expected avg_fill_notional_usdc=7.5, got %v", metrics["avg_fill_notional_usdc"])
+	}
+
+	recs, ok := resp["recommendations"].([]interface{})
+	if !ok {
+		t.Fatalf("expected recommendations list, got %T", resp["recommendations"])
+	}
+	if !containsActionCode(recs, "edge_above_friction") {
+		t.Fatalf("expected edge_above_friction recommendation, got %v", recs)
+	}
+}
+
+func TestHandleExecutionQualityLowEdge(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       20,
+		pnl:         0.2,
+		unrealPnL:   0.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:           -1.0,
+			DailyLossLimitUSDC: 20.0,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.6,
+			TotalVolumeUSDC: 1000.0,
+			TotalTrades:     20,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/execution-quality", nil)
+	w := httptest.NewRecorder()
+	s.handleExecutionQuality(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	metrics := resp["metrics"].(map[string]interface{})
+	if metrics["net_edge_bps"].(float64) >= 0 {
+		t.Fatalf("expected negative net_edge_bps, got %v", metrics["net_edge_bps"])
+	}
+
+	recs, ok := resp["recommendations"].([]interface{})
+	if !ok {
+		t.Fatalf("expected recommendations list, got %T", resp["recommendations"])
+	}
+	if !containsActionCode(recs, "reduce_churn") {
+		t.Fatalf("expected reduce_churn recommendation, got %v", recs)
+	}
+	if !containsActionCode(recs, "improve_selectivity") {
+		t.Fatalf("expected improve_selectivity recommendation, got %v", recs)
+	}
+}
+
+func TestHandleExecutionQualityRiskBlocked(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		fills:       5,
+		pnl:         1.0,
+		riskSnapshot: risk.Snapshot{
+			EmergencyStop:      true,
+			DailyPnL:           -15.0,
+			DailyLossLimitUSDC: 10.0,
+		},
+		paperSnapshot: paper.Snapshot{
+			FeesPaidUSDC:    0.1,
+			TotalVolumeUSDC: 100.0,
+			TotalTrades:     5,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/execution-quality", nil)
+	w := httptest.NewRecorder()
+	s.handleExecutionQuality(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["can_trade"] != false {
+		t.Fatalf("expected can_trade=false, got %v", resp["can_trade"])
+	}
+	recs := resp["recommendations"].([]interface{})
 	if !containsActionCode(recs, "pause_trading") {
 		t.Fatalf("expected pause_trading recommendation, got %v", recs)
 	}
