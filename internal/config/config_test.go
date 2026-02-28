@@ -169,6 +169,7 @@ func TestApplyEnvAllVars(t *testing.T) {
 	t.Setenv("BUILDER_PASSPHRASE", "builder-pass")
 	t.Setenv("TRADER_DRY_RUN", "1")
 	t.Setenv("TRADER_PAPER_ALLOW_SHORT", "false")
+	t.Setenv("TRADER_BUILDER_SYNC_INTERVAL", "45s")
 
 	cfg := Default()
 	cfg.ApplyEnv()
@@ -200,6 +201,9 @@ func TestApplyEnvAllVars(t *testing.T) {
 	if cfg.Paper.AllowShort {
 		t.Fatal("expected Paper.AllowShort false from env")
 	}
+	if cfg.BuilderSyncInterval != 45*time.Second {
+		t.Fatalf("expected BuilderSyncInterval 45s from env, got %v", cfg.BuilderSyncInterval)
+	}
 }
 
 func TestApplyEnvDryRunTrue(t *testing.T) {
@@ -228,5 +232,15 @@ func TestApplyEnvPaperAllowShort(t *testing.T) {
 	cfg.ApplyEnv()
 	if !cfg.Paper.AllowShort {
 		t.Fatal("expected Paper.AllowShort true from env '1'")
+	}
+}
+
+func TestApplyEnvBuilderSyncIntervalInvalid(t *testing.T) {
+	t.Setenv("TRADER_BUILDER_SYNC_INTERVAL", "not-a-duration")
+	cfg := Default()
+	cfg.BuilderSyncInterval = 2 * time.Minute
+	cfg.ApplyEnv()
+	if cfg.BuilderSyncInterval != 2*time.Minute {
+		t.Fatalf("expected invalid env duration to be ignored, got %v", cfg.BuilderSyncInterval)
 	}
 }

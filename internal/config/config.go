@@ -215,4 +215,9 @@ func (c *Config) ApplyEnv() {
 	if v := strings.TrimSpace(os.Getenv("TRADER_PAPER_ALLOW_SHORT")); v != "" {
 		c.Paper.AllowShort = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v := strings.TrimSpace(os.Getenv("TRADER_BUILDER_SYNC_INTERVAL")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.BuilderSyncInterval = d
+		}
+	}
 }

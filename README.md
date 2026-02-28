@@ -111,6 +111,7 @@ Startup performs config validation and exits fast on invalid critical values (mo
 | `dry_run` | bool | `true` | Log trades without executing |
 | `trading_mode` | string | `paper` | Execution backend (`paper` or `live`) |
 | `log_level` | string | `info` | Log verbosity |
+| `builder_sync_interval` | duration | `10m` | Builder volume/leaderboard refresh interval |
 | **Maker** | | | |
 | `maker.enabled` | bool | `true` | Enable market making |
 | `maker.markets` | []string | `[]` | Token IDs to trade (empty = auto-select) |
@@ -159,6 +160,7 @@ All credentials are loaded from environment variables (see `.env.example`):
 | `TRADER_DRY_RUN` | Override dry-run mode (`true`/`1`) |
 | `TRADER_TRADING_MODE` | Override mode (`paper`/`live`) |
 | `TRADER_PAPER_ALLOW_SHORT` | Override paper shorting (`true`/`1` enables synthetic shorting) |
+| `TRADER_BUILDER_SYNC_INTERVAL` | Override builder sync interval (Go duration, e.g. `30s`, `5m`) |
 
 ## Trading Strategies
 
