@@ -29,6 +29,7 @@ func TestTakerSignal(t *testing.T) {
 	}
 	if sig == nil {
 		t.Fatal("expected signal")
+		return
 	}
 	if sig.Side != "BUY" {
 		t.Fatalf("expected BUY, got %s", sig.Side)
@@ -110,6 +111,7 @@ func TestTakerSellSignal(t *testing.T) {
 	sig, _ := tk.Evaluate(book)
 	if sig == nil {
 		t.Fatal("expected signal")
+		return
 	}
 	if sig.Side != "SELL" {
 		t.Fatalf("expected SELL, got %s", sig.Side)
@@ -210,6 +212,7 @@ func TestCompositeSignalStrong(t *testing.T) {
 	}
 	if sig == nil {
 		t.Fatal("expected strong composite signal")
+		return
 	}
 	if sig.Side != "BUY" {
 		t.Fatalf("expected BUY (strong bid imbalance + buy flow), got %s", sig.Side)
@@ -267,6 +270,7 @@ func TestAdaptiveSizing(t *testing.T) {
 	sig, _ := tk.EvaluateEnhanced(book, ft, 0)
 	if sig == nil {
 		t.Fatal("expected signal")
+		return
 	}
 	// With very high composite score, amount should be > base amount.
 	if sig.AmountUSDC <= 20 {
@@ -304,5 +308,6 @@ func TestEvaluateEnhancedBackwardCompat(t *testing.T) {
 	}
 	if sig == nil {
 		t.Fatal("expected signal with imbalance-only")
+		return
 	}
 }

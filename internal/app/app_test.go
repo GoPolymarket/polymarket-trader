@@ -25,6 +25,7 @@ func TestNewApp(t *testing.T) {
 	a := New(cfg, nil, nil, nil, nil, nil, nil)
 	if a == nil {
 		t.Fatal("expected non-nil app")
+		return
 	}
 	if a.activeOrders == nil {
 		t.Fatal("expected initialized activeOrders map")

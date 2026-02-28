@@ -13,6 +13,7 @@ func TestNewTracker(t *testing.T) {
 
 	if tracker == nil {
 		t.Fatal("expected non-nil tracker")
+		return
 	}
 	if tracker.syncInterval != 5*time.Minute {
 		t.Errorf("expected 5m sync interval, got %v", tracker.syncInterval)

@@ -9,6 +9,7 @@ func TestNewVolumeTracker(t *testing.T) {
 	tracker := NewVolumeTracker(nil, 10*time.Minute)
 	if tracker == nil {
 		t.Fatal("expected non-nil tracker")
+		return
 	}
 	if tracker.syncInterval != 10*time.Minute {
 		t.Errorf("expected 10m sync interval, got %v", tracker.syncInterval)

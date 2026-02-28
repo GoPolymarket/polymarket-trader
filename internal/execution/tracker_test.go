@@ -36,6 +36,7 @@ func TestFillUpdatesPosition(t *testing.T) {
 	pos := tr.Position("asset-1")
 	if pos == nil {
 		t.Fatal("expected position")
+		return
 	}
 	if pos.NetSize != 10 {
 		t.Fatalf("expected net size 10, got %f", pos.NetSize)
@@ -60,6 +61,7 @@ func TestMultipleFillsAverageEntry(t *testing.T) {
 	pos := tr.Position("asset-1")
 	if pos == nil {
 		t.Fatal("expected position")
+		return
 	}
 	if pos.NetSize != 20 {
 		t.Fatalf("expected net size 20, got %f", pos.NetSize)
@@ -84,6 +86,7 @@ func TestSellRealizePnL(t *testing.T) {
 	pos := tr.Position("asset-1")
 	if pos == nil {
 		t.Fatal("expected position")
+		return
 	}
 	if math.Abs(pos.RealizedPnL-2.0) > 1e-9 {
 		t.Fatalf("expected realized PnL 2.0, got %f", pos.RealizedPnL)
