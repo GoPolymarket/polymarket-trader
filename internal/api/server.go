@@ -39,6 +39,7 @@ type AppState interface {
 	RiskSnapshot() risk.Snapshot
 	TradingMode() string
 	PaperSnapshot() paper.Snapshot
+	KPIStats() map[string]interface{}
 }
 
 // PortfolioProvider exposes portfolio data (nil if unavailable).
@@ -82,6 +83,7 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 	mux.HandleFunc("/api/coach", s.handleCoach)
 	mux.HandleFunc("/api/sizing", s.handleSizing)
 	mux.HandleFunc("/api/insights", s.handleInsights)
+	mux.HandleFunc("/api/kpi", s.handleKPI)
 	mux.HandleFunc("/api/alpha-manager", s.handleAlphaManager)
 	mux.HandleFunc("/api/growth-funnel", s.handleGrowthFunnel)
 	mux.HandleFunc("/api/profiles", s.handleProfiles)
@@ -249,6 +251,440 @@ func (s *Server) handlePerf(w http.ResponseWriter, _ *http.Request) {
 		"fees_paid_usdc":          fees,
 		"net_pnl_after_fees_usdc": total - fees,
 		"estimated_equity_usdc":   estimatedEquity,
+	})
+}
+
+func safeDiv(numerator, denominator float64) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return numerator / denominator
+}
+
+func mapFloat(m map[string]interface{}, key string, fallback float64) float64 {
+	if m == nil {
+		return fallback
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return fallback
+	}
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case int32:
+		return float64(t)
+	case uint:
+		return float64(t)
+	case uint64:
+		return float64(t)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	text := strings.TrimSpace(fmt.Sprint(v))
+	if text == "" || strings.EqualFold(text, "<nil>") {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func mapInt(m map[string]interface{}, key string, fallback int) int {
+	if m == nil {
+		return fallback
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return fallback
+	}
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case int32:
+		return int(t)
+	case uint:
+		return int(t)
+	case uint64:
+		return int(t)
+	case float64:
+		return int(t)
+	case float32:
+		return int(t)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(t))
+		if err == nil {
+			return parsed
+		}
+	}
+	text := strings.TrimSpace(fmt.Sprint(v))
+	if text == "" || strings.EqualFold(text, "<nil>") {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(text)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func normalizedReasonMap(raw interface{}) map[string]interface{} {
+	out := make(map[string]interface{})
+	switch reasons := raw.(type) {
+	case map[string]interface{}:
+		for key, value := range reasons {
+			out[key] = mapInt(map[string]interface{}{"v": value}, "v", 0)
+		}
+	case map[string]int:
+		for key, value := range reasons {
+			out[key] = value
+		}
+	case map[string]float64:
+		for key, value := range reasons {
+			out[key] = int(value)
+		}
+	default:
+		rv := reflect.ValueOf(raw)
+		if !rv.IsValid() || rv.Kind() != reflect.Map {
+			return out
+		}
+		iter := rv.MapRange()
+		for iter.Next() {
+			key := fmt.Sprint(iter.Key().Interface())
+			out[key] = mapInt(map[string]interface{}{"v": iter.Value().Interface()}, "v", 0)
+		}
+	}
+	return out
+}
+
+func reflectedField(value reflect.Value, name string) (reflect.Value, bool) {
+	v := value
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return reflect.Value{}, false
+		}
+		v = v.Elem()
+	}
+	if !v.IsValid() {
+		return reflect.Value{}, false
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		field := v.FieldByName(name)
+		if field.IsValid() && field.CanInterface() {
+			return field, true
+		}
+	case reflect.Map:
+		for _, key := range []string{name, strings.ToLower(name), strings.ToUpper(name)} {
+			val := v.MapIndex(reflect.ValueOf(key))
+			if val.IsValid() {
+				return val, true
+			}
+		}
+	}
+	return reflect.Value{}, false
+}
+
+func extractBuilderDailyVolumeUSDC(raw interface{}) float64 {
+	if raw == nil {
+		return 0
+	}
+	rv := reflect.ValueOf(raw)
+	if !rv.IsValid() {
+		return 0
+	}
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return 0
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return 0
+	}
+	total := 0.0
+	for i := 0; i < rv.Len(); i++ {
+		entry := rv.Index(i)
+		if field, ok := reflectedField(entry, "Volume"); ok {
+			total += mapFloat(map[string]interface{}{"v": field.Interface()}, "v", 0)
+		}
+	}
+	return round2(total)
+}
+
+func extractBuilderLeaderboardRank(raw interface{}) int {
+	if raw == nil {
+		return 0
+	}
+	rv := reflect.ValueOf(raw)
+	if !rv.IsValid() {
+		return 0
+	}
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return 0
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return 0
+	}
+	best := 0
+	for i := 0; i < rv.Len(); i++ {
+		entry := rv.Index(i)
+		field, ok := reflectedField(entry, "Rank")
+		if !ok {
+			continue
+		}
+		rank := mapInt(map[string]interface{}{"v": field.Interface()}, "v", 0)
+		if rank <= 0 {
+			continue
+		}
+		if best == 0 || rank < best {
+			best = rank
+		}
+	}
+	return best
+}
+
+func deriveBuilderFactor(builderDailyVolumeUSDC float64, leaderboardRank int, fresh bool) float64 {
+	volumeScore := clamp(builderDailyVolumeUSDC/10000, 0, 1)
+	rankScore := 0.0
+	if leaderboardRank > 0 {
+		rankScore = clamp((100-float64(leaderboardRank))/100, 0, 1)
+	}
+	freshScore := 0.0
+	if fresh {
+		freshScore = 0.2
+	}
+	combined := clamp(0.55*volumeScore+0.25*rankScore+freshScore, 0, 1)
+	return clamp(0.8+combined*0.4, 0.8, 1.2)
+}
+
+func deriveGrantReadinessScore(
+	netPnLDailyUSDC float64,
+	pnlPerFillUSDC float64,
+	feeToGrossPnLRatio float64,
+	riskBlockEvents int,
+	cooldownTriggers int,
+	riskCompliance30d float64,
+	executionLossBps float64,
+	builderDailyVolumeUSDC float64,
+	leaderboardRank int,
+	builderFresh bool,
+) int {
+	profitStability := 40.0
+	if netPnLDailyUSDC > 0 {
+		profitStability += 35
+	}
+	if pnlPerFillUSDC > 0 {
+		profitStability += 20
+	}
+	if feeToGrossPnLRatio > 0 && feeToGrossPnLRatio < 0.35 {
+		profitStability += 5
+	}
+	profitStability = clamp(profitStability, 0, 100)
+
+	riskDiscipline := clamp(riskCompliance30d*100, 0, 100)
+	riskDiscipline -= float64(riskBlockEvents*3 + cooldownTriggers*5)
+	riskDiscipline = clamp(riskDiscipline, 0, 100)
+
+	execQuality := 100 - executionLossBps*2
+	execQuality = clamp(execQuality, 0, 100)
+
+	attribution := 20.0
+	if builderFresh {
+		attribution += 30
+	}
+	if builderDailyVolumeUSDC > 0 {
+		attribution += clamp(builderDailyVolumeUSDC/1000, 0, 30)
+	}
+	if leaderboardRank > 0 {
+		attribution += clamp((100-float64(leaderboardRank))/2, 0, 20)
+	}
+	attribution = clamp(attribution, 0, 100)
+
+	score := 0.4*profitStability + 0.3*riskDiscipline + 0.2*execQuality + 0.1*attribution
+	return int(math.Round(clamp(score, 0, 100)))
+}
+
+// GET /api/kpi — canonical north-star + funnel KPI board.
+func (s *Server) handleKPI(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC()
+	mode := s.appState.TradingMode()
+	orders, fills, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	totalPnL := realized + unrealized
+	paperSnap := s.appState.PaperSnapshot()
+	fees := 0.0
+	if mode == "paper" {
+		fees = paperSnap.FeesPaidUSDC
+	}
+	netPnLAfterFees := totalPnL - fees
+
+	kpiStats := s.appState.KPIStats()
+
+	makerSignals := mapInt(kpiStats, "maker_signal_count_daily", 0)
+	takerSignals := mapInt(kpiStats, "taker_signal_count_daily", 0)
+	signalCount := mapInt(kpiStats, "signal_count_daily", makerSignals+takerSignals)
+	submittedOrders := mapInt(kpiStats, "submitted_orders_daily", 0)
+	filledOrders := mapInt(kpiStats, "filled_orders_daily", 0)
+	orderSubmitRate := safeDiv(float64(submittedOrders), float64(signalCount))
+	fillRate := safeDiv(float64(filledOrders), float64(submittedOrders))
+
+	pnlPerFill := safeDiv(totalPnL, float64(fills))
+	feeDenominator := math.Max(realized+unrealized, 1e-9)
+	feeToGrossPnLRatio := safeDiv(fees, feeDenominator)
+
+	recentFills := s.appState.RecentFills(200)
+	execMetrics := calculateExecutionQualityMetrics(mode, fills, totalPnL, paperSnap, recentFills)
+	execBreakdown := calculateExecutionLossBreakdown(execMetrics)
+
+	executionLossBps := mapFloat(kpiStats, "execution_loss_bps", execBreakdown.TotalLossBps)
+	makerSpreadCaptureBps := mapFloat(kpiStats, "maker_spread_capture_bps", 0)
+	takerSignalRealizationRate := clamp(mapFloat(kpiStats, "taker_signal_realization_rate", 0), 0, 1)
+
+	riskCompliance30d := clamp(mapFloat(kpiStats, "risk_compliance_30d", -1), 0, 1)
+	if riskCompliance30d < 0 {
+		snap := s.appState.RiskSnapshot()
+		riskCompliance30d = 0
+		if buildRiskStatus(snap).canTrade {
+			riskCompliance30d = 1
+		}
+	}
+
+	netPnL30dRealized := mapFloat(kpiStats, "net_pnl_30d_realized_usdc", realized)
+	netPnL30dTotal := mapFloat(kpiStats, "net_pnl_30d_total_usdc", totalPnL)
+	netPnL30dSelected := mapFloat(kpiStats, "net_pnl_30d_selected_for_rav_usdc", netPnL30dTotal)
+	netPnL30dWindowDays := mapInt(kpiStats, "net_pnl_30d_window_effective_days", 0)
+
+	execQualityFactor30d := mapFloat(kpiStats, "exec_quality_factor_30d", 0)
+	if execQualityFactor30d <= 0 {
+		execQualityFactor30d = 0.7 + clamp(execMetrics.QualityScore, 0, 100)/100*0.5
+	}
+	execQualityFactor30d = clamp(execQualityFactor30d, 0.7, 1.2)
+
+	builderDailyVolumeUSDC := mapFloat(kpiStats, "builder_daily_volume_usdc", -1)
+	leaderboardRank := mapInt(kpiStats, "leaderboard_rank", 0)
+	builderStatus := s.currentBuilderStatus()
+	if s.builder != nil {
+		if builderDailyVolumeUSDC < 0 {
+			builderDailyVolumeUSDC = extractBuilderDailyVolumeUSDC(s.builder.DailyVolumeJSON())
+		}
+		if leaderboardRank <= 0 {
+			leaderboardRank = extractBuilderLeaderboardRank(s.builder.LeaderboardJSON())
+		}
+	}
+	if builderDailyVolumeUSDC < 0 {
+		builderDailyVolumeUSDC = 0
+	}
+
+	builderFactor30d := mapFloat(kpiStats, "builder_factor_30d", 0)
+	if builderFactor30d <= 0 {
+		builderFactor30d = deriveBuilderFactor(builderDailyVolumeUSDC, leaderboardRank, builderStatus.fresh)
+	}
+	builderFactor30d = clamp(builderFactor30d, 0.8, 1.2)
+
+	rav30 := round2(netPnL30dSelected * riskCompliance30d * execQualityFactor30d * builderFactor30d)
+	riskBlockEventsDaily := mapInt(kpiStats, "risk_block_events_daily", 0)
+	riskBlockEventsByReason := normalizedReasonMap(kpiStats["risk_block_events_daily_by_reason"])
+	cooldownTriggerCountDaily := mapInt(kpiStats, "cooldown_trigger_count_daily", 0)
+	emergencyStopActiveDurationSDaily := mapFloat(kpiStats, "emergency_stop_active_duration_s_daily", 0)
+
+	netPnLDailyUSDC := mapFloat(kpiStats, "net_pnl_daily_usdc", netPnLAfterFees)
+	grantReadinessScore := mapInt(kpiStats, "grant_readiness_score", -1)
+	if grantReadinessScore < 0 {
+		grantReadinessScore = deriveGrantReadinessScore(
+			netPnLDailyUSDC,
+			pnlPerFill,
+			feeToGrossPnLRatio,
+			riskBlockEventsDaily,
+			cooldownTriggerCountDaily,
+			riskCompliance30d,
+			executionLossBps,
+			builderDailyVolumeUSDC,
+			leaderboardRank,
+			builderStatus.fresh,
+		)
+	}
+
+	s.writeJSON(w, map[string]interface{}{
+		"generated_at": generatedAt,
+		"trading_mode": mode,
+		"timezone":     "UTC",
+		"window":       "30d",
+		"north_star": map[string]interface{}{
+			"name": "RAV30",
+			"formula": map[string]interface{}{
+				"expression":              "NetPnL30d * RiskCompliance30d * ExecQualityFactor30d * BuilderFactor30d",
+				"net_pnl_30d_usdc":        round2(netPnL30dSelected),
+				"risk_compliance_30d":     round2(riskCompliance30d),
+				"exec_quality_factor_30d": round2(execQualityFactor30d),
+				"builder_factor_30d":      round2(builderFactor30d),
+			},
+			"rav30": round2(rav30),
+			"net_pnl_30d": map[string]interface{}{
+				"realized_only_usdc":    round2(netPnL30dRealized),
+				"total_usdc":            round2(netPnL30dTotal),
+				"selected_for_rav_usdc": round2(netPnL30dSelected),
+				"effective_window_days": netPnL30dWindowDays,
+			},
+			"risk_compliance_30d":     round2(riskCompliance30d),
+			"exec_quality_factor_30d": round2(execQualityFactor30d),
+			"builder_factor_30d":      round2(builderFactor30d),
+		},
+		"process_metrics": map[string]interface{}{
+			"signal_count_daily":                     signalCount,
+			"maker_signal_count_daily":               makerSignals,
+			"taker_signal_count_daily":               takerSignals,
+			"order_submit_rate":                      round2(orderSubmitRate),
+			"fill_rate":                              round2(fillRate),
+			"net_pnl_daily_usdc":                     round2(netPnLDailyUSDC),
+			"pnl_per_fill_usdc":                      round2(pnlPerFill),
+			"fee_to_gross_pnl_ratio":                 round2(feeToGrossPnLRatio),
+			"risk_block_events_daily":                riskBlockEventsDaily,
+			"risk_block_events_daily_by_reason":      riskBlockEventsByReason,
+			"cooldown_trigger_count_daily":           cooldownTriggerCountDaily,
+			"emergency_stop_active_duration_s_daily": round2(emergencyStopActiveDurationSDaily),
+			"execution_loss_bps":                     round2(executionLossBps),
+			"maker_spread_capture_bps":               round2(makerSpreadCaptureBps),
+			"taker_signal_realization_rate":          round2(takerSignalRealizationRate),
+			"builder_daily_volume_usdc":              round2(builderDailyVolumeUSDC),
+			"leaderboard_rank":                       leaderboardRank,
+			"grant_readiness_score":                  grantReadinessScore,
+		},
+		"data_hygiene": map[string]interface{}{
+			"pnl_columns": []string{"realized_only", "total"},
+			"timezone":    "UTC",
+			"trading_mode_split": map[string]interface{}{
+				"paper": mode == "paper",
+				"live":  mode == "live",
+			},
+			"fees_source":           "/api/perf",
+			"risk_reason_dimension": []string{"open_orders", "daily_loss", "cooldown", "emergency_stop", "position_limit", "unknown"},
+		},
+		"raw": map[string]interface{}{
+			"orders":                  orders,
+			"fills":                   fills,
+			"realized_pnl_usdc":       round2(realized),
+			"unrealized_pnl_usdc":     round2(unrealized),
+			"total_pnl_usdc":          round2(totalPnL),
+			"fees_paid_usdc":          round2(fees),
+			"net_pnl_after_fees_usdc": round2(netPnLAfterFees),
+		},
 	})
 }
 

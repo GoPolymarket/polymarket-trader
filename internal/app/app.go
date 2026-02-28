@@ -44,6 +44,7 @@ type App struct {
 	maker   *strategy.Maker
 	taker   *strategy.Taker
 	tracker *execution.Tracker
+	kpi     *kpiCollector
 
 	// Phase 1.1: FlowTracker for enhanced taker signals.
 	flowTracker *strategy.FlowTracker
@@ -164,6 +165,7 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 			MinCompositeScore: cfg.Taker.MinCompositeScore,
 		}),
 		tracker:       tracker,
+		kpi:           newKPICollector(),
 		flowTracker:   flowTracker,
 		tokenPairs:    make(map[string]string),
 		notifier:      notifier,
@@ -213,6 +215,9 @@ func New(cfg config.Config, clobClient clob.Client, wsClient ws.Client, signer a
 	// OnFill callback: record flow + notify.
 	tracker.OnFill = func(f execution.Fill) {
 		riskMgr.RecordPnL(0)
+		if a.kpi != nil {
+			a.kpi.recordFill(time.Now().UTC())
+		}
 		log.Printf("fill: %s %s %s price=%.4f size=%.2f", f.Side, f.AssetID, f.TradeID, f.Price, f.Size)
 		// Phase 1.1: Record flow for EvaluateEnhanced.
 		a.flowTracker.Record(f.AssetID, f.Side, f.Size, f.Price)
@@ -420,6 +425,7 @@ func (a *App) Run(ctx context.Context) error {
 
 func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 	a.books.Update(event)
+	now := time.Now().UTC()
 
 	if a.cfg.Maker.Enabled {
 		// Build inventory state from tracker.
@@ -449,6 +455,14 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 				}
 			}
 		}
+		if a.kpi != nil {
+			mid := (quote.BuyPrice + quote.SellPrice) / 2
+			spreadCaptureBps := 0.0
+			if mid > 0 {
+				spreadCaptureBps = (quote.SellPrice - quote.BuyPrice) / mid * 10000
+			}
+			a.kpi.recordMakerSignal(now, spreadCaptureBps)
+		}
 
 		if old, has := a.activeOrders[event.AssetID]; has && len(old) > 0 {
 			if a.tradingMode == "live" && a.clobClient != nil {
@@ -461,6 +475,9 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 
 		if !a.cfg.DryRun {
 			if err := a.riskMgr.Allow(event.AssetID, quote.Size); err != nil {
+				if a.kpi != nil {
+					a.kpi.recordRiskBlock(now, classifyRiskAllowError(err))
+				}
 				return
 			}
 			buyResp := a.placeLimit(ctx, event.AssetID, "BUY", quote.BuyPrice, quote.Size)
@@ -494,8 +511,16 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 		if err != nil || sig == nil {
 			return
 		}
+		if a.kpi != nil {
+			if mid := eventMidPrice(event); mid > 0 {
+				a.kpi.recordTakerSignal(now, sig.AssetID, sig.Side, mid, defaultTakerRealizationWindow)
+			}
+		}
 		if !a.cfg.DryRun {
 			if err := a.riskMgr.Allow(event.AssetID, sig.AmountUSDC); err != nil {
+				if a.kpi != nil {
+					a.kpi.recordRiskBlock(now, classifyRiskAllowError(err))
+				}
 				return
 			}
 			resp := a.placeMarket(ctx, sig.AssetID, sig.Side, sig.AmountUSDC)
@@ -513,6 +538,12 @@ func (a *App) HandleBookEvent(ctx context.Context, event ws.OrderbookEvent) {
 
 	// Phase 3.1: Convergence arbitrage — buy both YES+NO when sum deviates from $1.
 	a.checkConvergenceArbitrage(ctx, event)
+
+	if a.kpi != nil {
+		if mid := eventMidPrice(event); mid > 0 {
+			a.kpi.evaluateTakerRealization(now, event.AssetID, mid)
+		}
+	}
 }
 
 func (a *App) Shutdown(ctx context.Context) {
@@ -556,6 +587,9 @@ func (a *App) MonitoredAssets() []string { return a.books.AssetIDs() }
 // SetEmergencyStop activates or deactivates the emergency stop.
 func (a *App) SetEmergencyStop(stop bool) {
 	a.riskMgr.SetEmergencyStop(stop)
+	if a.kpi != nil {
+		a.kpi.setEmergencyStop(time.Now().UTC(), stop)
+	}
 	if stop && a.notifier != nil {
 		_ = a.notifier.NotifyEmergencyStop(context.Background())
 	}
@@ -592,6 +626,29 @@ func (a *App) PaperSnapshot() paper.Snapshot {
 		return paper.Snapshot{}
 	}
 	return a.paperSim.Snapshot()
+}
+
+// KPIStats returns runtime KPI counters and rolling-window aggregates.
+func (a *App) KPIStats() map[string]interface{} {
+	if a.kpi == nil {
+		return map[string]interface{}{}
+	}
+	now := time.Now().UTC()
+	realized := a.tracker.TotalRealizedPnL()
+	unrealized := a.UnrealizedPnL()
+	total := realized + unrealized
+	fees := 0.0
+	if a.tradingMode == "paper" && a.paperSim != nil {
+		fees = a.paperSim.Snapshot().FeesPaidUSDC
+	}
+	a.kpi.recordPnLSample(now, realized, total, fees)
+	stats := a.kpi.snapshot(now)
+	stats["realized_pnl_usdc"] = round6(realized)
+	stats["unrealized_pnl_usdc"] = round6(unrealized)
+	stats["total_pnl_usdc"] = round6(total)
+	stats["fees_paid_usdc"] = round6(fees)
+	stats["net_pnl_after_fees_usdc"] = round6(total - fees)
+	return stats
 }
 
 // UnrealizedPnL computes unrealized PnL across all positions.
@@ -745,9 +802,15 @@ func (a *App) checkConvergenceArbitrage(ctx context.Context, event ws.OrderbookE
 		halfAmount := amount / 2
 
 		if err := a.riskMgr.Allow(event.AssetID, halfAmount); err != nil {
+			if a.kpi != nil {
+				a.kpi.recordRiskBlock(time.Now().UTC(), classifyRiskAllowError(err))
+			}
 			return
 		}
 		if err := a.riskMgr.Allow(counterpartID, halfAmount); err != nil {
+			if a.kpi != nil {
+				a.kpi.recordRiskBlock(time.Now().UTC(), classifyRiskAllowError(err))
+			}
 			return
 		}
 
@@ -776,6 +839,9 @@ func (a *App) checkConvergenceArbitrage(ctx context.Context, event ws.OrderbookE
 		}
 
 		if err := a.riskMgr.Allow(targetID, amount); err != nil {
+			if a.kpi != nil {
+				a.kpi.recordRiskBlock(time.Now().UTC(), classifyRiskAllowError(err))
+			}
 			return
 		}
 
@@ -811,6 +877,9 @@ func (a *App) handleCryptoPrice(ctx context.Context, ev rtds.CryptoPriceEvent) {
 		}
 
 		if err := a.riskMgr.Allow(sig.MarketAssetID, sig.AmountUSDC); err != nil {
+			if a.kpi != nil {
+				a.kpi.recordRiskBlock(time.Now().UTC(), classifyRiskAllowError(err))
+			}
 			continue
 		}
 
@@ -947,6 +1016,9 @@ func (a *App) riskSync(ctx context.Context) {
 	if !a.realizedInitialized {
 		if currentRealized != 0 {
 			if a.riskMgr.RecordTradeResult(currentRealized) {
+				if a.kpi != nil {
+					a.kpi.recordCooldownTrigger(time.Now().UTC())
+				}
 				log.Printf("risk cooldown triggered: consecutive losses=%d", a.riskMgr.ConsecutiveLosses())
 				a.notifyRiskCooldown(ctx)
 			}
@@ -957,6 +1029,9 @@ func (a *App) riskSync(ctx context.Context) {
 		realizedDelta := currentRealized - a.lastRealizedPnL
 		if realizedDelta != 0 {
 			if a.riskMgr.RecordTradeResult(realizedDelta) {
+				if a.kpi != nil {
+					a.kpi.recordCooldownTrigger(time.Now().UTC())
+				}
 				log.Printf("risk cooldown triggered: consecutive losses=%d", a.riskMgr.ConsecutiveLosses())
 				a.notifyRiskCooldown(ctx)
 			}
@@ -1011,6 +1086,21 @@ func (a *App) riskSync(ctx context.Context) {
 		log.Println("EMERGENCY: max drawdown exceeded, triggering emergency stop")
 		a.SetEmergencyStop(true)
 	}
+
+	if a.kpi != nil {
+		now := time.Now().UTC()
+		snap := a.riskMgr.Snapshot()
+		canTrade := len(riskBlockedReasonsFromSnapshot(snap)) == 0
+		a.kpi.recordRiskCompliance(now, canTrade)
+		a.kpi.setEmergencyStop(now, snap.EmergencyStop)
+
+		totalPnL := currentRealized + totalUnrealized
+		fees := 0.0
+		if a.tradingMode == "paper" && a.paperSim != nil {
+			fees = a.paperSim.Snapshot().FeesPaidUSDC
+		}
+		a.kpi.recordPnLSample(now, currentRealized, totalPnL, fees)
+	}
 }
 
 func (a *App) notifyRiskCooldown(ctx context.Context) {
@@ -1023,6 +1113,42 @@ func (a *App) notifyRiskCooldown(ctx context.Context) {
 		a.cfg.Risk.MaxConsecutiveLosses,
 		a.riskMgr.CooldownRemaining(),
 	)
+}
+
+func classifyRiskAllowError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "max open orders"):
+		return "open_orders"
+	case strings.Contains(msg, "daily loss limit"):
+		return "daily_loss"
+	case strings.Contains(msg, "cooldown"):
+		return "cooldown"
+	case strings.Contains(msg, "emergency stop"):
+		return "emergency_stop"
+	case strings.Contains(msg, "position limit"):
+		return "position_limit"
+	default:
+		return "unknown"
+	}
+}
+
+func eventMidPrice(event ws.OrderbookEvent) float64 {
+	if len(event.Bids) == 0 || len(event.Asks) == 0 {
+		return 0
+	}
+	bid, err := strconv.ParseFloat(event.Bids[0].Price, 64)
+	if err != nil || bid <= 0 {
+		return 0
+	}
+	ask, err := strconv.ParseFloat(event.Asks[0].Price, 64)
+	if err != nil || ask <= 0 {
+		return 0
+	}
+	return (bid + ask) / 2
 }
 
 func riskBlockedReasonsFromSnapshot(snap risk.Snapshot) []string {
@@ -1284,7 +1410,11 @@ func (a *App) unwindPosition(ctx context.Context, assetID string, pos execution.
 
 func (a *App) placeLimit(ctx context.Context, tokenID, side string, price, sizeUSDC float64) clobtypes.OrderResponse {
 	if a.tradingMode == "paper" {
-		return a.placePaperLimit(tokenID, side, price, sizeUSDC)
+		resp := a.placePaperLimit(tokenID, side, price, sizeUSDC)
+		if a.kpi != nil && resp.ID != "" {
+			a.kpi.recordOrderSubmitted(time.Now().UTC())
+		}
+		return resp
 	}
 
 	builder := clob.NewOrderBuilder(a.clobClient, a.signer).
@@ -1304,13 +1434,20 @@ func (a *App) placeLimit(ctx context.Context, tokenID, side string, price, sizeU
 		log.Printf("place limit %s %s: %v", side, tokenID, err)
 		return clobtypes.OrderResponse{}
 	}
+	if a.kpi != nil && resp.ID != "" {
+		a.kpi.recordOrderSubmitted(time.Now().UTC())
+	}
 	log.Printf("limit %s %s @ %.4f: id=%s", side, tokenID, price, resp.ID)
 	return resp
 }
 
 func (a *App) placeMarket(ctx context.Context, tokenID, side string, amountUSDC float64) clobtypes.OrderResponse {
 	if a.tradingMode == "paper" {
-		return a.placePaperMarket(tokenID, side, amountUSDC)
+		resp := a.placePaperMarket(tokenID, side, amountUSDC)
+		if a.kpi != nil && resp.ID != "" {
+			a.kpi.recordOrderSubmitted(time.Now().UTC())
+		}
+		return resp
 	}
 
 	builder := clob.NewOrderBuilder(a.clobClient, a.signer).
@@ -1328,6 +1465,9 @@ func (a *App) placeMarket(ctx context.Context, tokenID, side string, amountUSDC 
 	if err != nil {
 		log.Printf("place market %s %s: %v", side, tokenID, err)
 		return clobtypes.OrderResponse{}
+	}
+	if a.kpi != nil && resp.ID != "" {
+		a.kpi.recordOrderSubmitted(time.Now().UTC())
 	}
 	log.Printf("market %s %s amount=%.2f: id=%s", side, tokenID, amountUSDC, resp.ID)
 	return resp

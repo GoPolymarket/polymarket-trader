@@ -29,6 +29,7 @@ type mockAppState struct {
 	riskSnapshot  risk.Snapshot
 	tradingMode   string
 	paperSnapshot paper.Snapshot
+	kpiStats      map[string]interface{}
 }
 
 func (m *mockAppState) Stats() (int, int, float64)                      { return m.orders, m.fills, m.pnl }
@@ -43,6 +44,7 @@ func (m *mockAppState) UnrealizedPnL() float64                          { return
 func (m *mockAppState) RiskSnapshot() risk.Snapshot                     { return m.riskSnapshot }
 func (m *mockAppState) TradingMode() string                             { return m.tradingMode }
 func (m *mockAppState) PaperSnapshot() paper.Snapshot                   { return m.paperSnapshot }
+func (m *mockAppState) KPIStats() map[string]interface{}                { return m.kpiStats }
 
 type mockPortfolio struct {
 	value    float64
@@ -972,6 +974,132 @@ func TestHandleGrowthFunnel(t *testing.T) {
 	}
 	if int(funnel["discover_markets"].(float64)) != 4 {
 		t.Fatalf("expected discover_markets=4, got %v", funnel["discover_markets"])
+	}
+}
+
+func TestHandleKPI(t *testing.T) {
+	state := &mockAppState{
+		tradingMode: "paper",
+		orders:      12,
+		fills:       20,
+		pnl:         14.0,
+		unrealPnL:   -2.0,
+		riskSnapshot: risk.Snapshot{
+			DailyPnL:             -4.0,
+			DailyLossLimitUSDC:   20.0,
+			ConsecutiveLosses:    1,
+			MaxConsecutiveLosses: 3,
+		},
+		paperSnapshot: paper.Snapshot{
+			InitialBalanceUSDC: 1000.0,
+			FeesPaidUSDC:       1.5,
+			TotalVolumeUSDC:    600.0,
+			TotalTrades:        20,
+		},
+		kpiStats: map[string]interface{}{
+			"signal_count_daily":                        80,
+			"maker_signal_count_daily":                  50,
+			"taker_signal_count_daily":                  30,
+			"submitted_orders_daily":                    40,
+			"filled_orders_daily":                       20,
+			"risk_block_events_daily":                   4,
+			"risk_block_events_daily_by_reason":         map[string]interface{}{"open_orders": 2, "daily_loss": 1, "cooldown": 1},
+			"cooldown_trigger_count_daily":              2,
+			"emergency_stop_active_duration_s_daily":    180.0,
+			"maker_spread_capture_bps":                  7.5,
+			"taker_signal_realization_rate":             0.62,
+			"risk_compliance_30d":                       0.85,
+			"net_pnl_30d_realized_usdc":                 9.0,
+			"net_pnl_30d_total_usdc":                    11.0,
+			"net_pnl_30d_selected_for_rav_usdc":         11.0,
+			"exec_quality_factor_30d":                   1.10,
+			"builder_factor_30d":                        1.05,
+			"execution_loss_bps":                        24.5,
+			"builder_daily_volume_usdc":                 2450.0,
+			"leaderboard_rank":                          18,
+			"grant_readiness_score":                     72,
+			"risk_compliance_samples_30d":               96,
+			"risk_compliance_tradable_samples_30d":      82,
+			"taker_signal_realization_window_minutes":   5,
+			"maker_spread_capture_samples_daily":        20,
+			"execution_loss_source":                     "app_kpi_stats",
+			"builder_factor_source":                     "app_kpi_stats",
+			"exec_quality_factor_source":                "app_kpi_stats",
+			"net_pnl_30d_window_effective_days":         3,
+			"emergency_stop_is_active":                  false,
+			"emergency_stop_active_started_at_utc":      nil,
+			"last_updated_at_utc":                       time.Now().UTC().Format(time.RFC3339),
+			"risk_block_last_reason":                    "open_orders",
+			"risk_block_events_daily_by_reason_unknown": 0,
+		},
+	}
+	s := NewServer(":0", state, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kpi", nil)
+	w := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	northStar, ok := resp["north_star"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected north_star object, got %T", resp["north_star"])
+	}
+	netPnL30d, ok := northStar["net_pnl_30d"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected net_pnl_30d object, got %T", northStar["net_pnl_30d"])
+	}
+	selectedPnL := netPnL30d["selected_for_rav_usdc"].(float64)
+	riskCompliance := northStar["risk_compliance_30d"].(float64)
+	execFactor := northStar["exec_quality_factor_30d"].(float64)
+	builderFactor := northStar["builder_factor_30d"].(float64)
+	expectedRAV30 := selectedPnL * riskCompliance * execFactor * builderFactor
+	if math.Abs(northStar["rav30"].(float64)-expectedRAV30) > 0.01 {
+		t.Fatalf("expected rav30=%v, got %v", expectedRAV30, northStar["rav30"])
+	}
+	if netPnL30d["realized_only_usdc"] == nil || netPnL30d["total_usdc"] == nil {
+		t.Fatalf("expected dual pnl columns in net_pnl_30d, got %v", netPnL30d)
+	}
+
+	metrics, ok := resp["process_metrics"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected process_metrics object, got %T", resp["process_metrics"])
+	}
+	required := []string{
+		"signal_count_daily",
+		"order_submit_rate",
+		"fill_rate",
+		"net_pnl_daily_usdc",
+		"pnl_per_fill_usdc",
+		"fee_to_gross_pnl_ratio",
+		"risk_block_events_daily",
+		"risk_block_events_daily_by_reason",
+		"cooldown_trigger_count_daily",
+		"emergency_stop_active_duration_s_daily",
+		"execution_loss_bps",
+		"maker_spread_capture_bps",
+		"taker_signal_realization_rate",
+		"builder_daily_volume_usdc",
+		"leaderboard_rank",
+		"grant_readiness_score",
+	}
+	for _, key := range required {
+		if _, exists := metrics[key]; !exists {
+			t.Fatalf("expected process_metrics.%s", key)
+		}
+	}
+	reasons, ok := metrics["risk_block_events_daily_by_reason"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reason map, got %T", metrics["risk_block_events_daily_by_reason"])
+	}
+	if reasons["open_orders"] == nil {
+		t.Fatalf("expected open_orders reason in risk_block_events_daily_by_reason, got %v", reasons)
 	}
 }
 

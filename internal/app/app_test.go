@@ -192,6 +192,83 @@ func TestHandleBookEventMultipleUpdates(t *testing.T) {
 	}
 }
 
+func TestKPIStatsTracksSignalsAndRiskBlockReason(t *testing.T) {
+	cfg := testConfig()
+	cfg.DryRun = false
+	cfg.TradingMode = "paper"
+	cfg.Maker.Enabled = true
+	cfg.Taker.Enabled = false
+	cfg.Risk.MaxOpenOrders = 0 // force risk block on every submit attempt
+
+	a := New(cfg, nil, nil, nil, nil, nil, nil)
+
+	event := ws.OrderbookEvent{
+		AssetID: "asset-1",
+		Bids:    []ws.OrderbookLevel{{Price: "0.50", Size: "100"}},
+		Asks:    []ws.OrderbookLevel{{Price: "0.52", Size: "100"}},
+	}
+	a.HandleBookEvent(context.Background(), event)
+
+	stats := a.KPIStats()
+	if got := intFromAny(stats["signal_count_daily"]); got < 1 {
+		t.Fatalf("expected signal_count_daily >= 1, got %v", stats["signal_count_daily"])
+	}
+	if got := intFromAny(stats["risk_block_events_daily"]); got < 1 {
+		t.Fatalf("expected risk_block_events_daily >= 1, got %v", stats["risk_block_events_daily"])
+	}
+	reasons, ok := stats["risk_block_events_daily_by_reason"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reason map, got %T", stats["risk_block_events_daily_by_reason"])
+	}
+	if intFromAny(reasons["open_orders"]) < 1 {
+		t.Fatalf("expected open_orders risk reason count >= 1, got %v", reasons["open_orders"])
+	}
+}
+
+func TestKPIStatsTracksSubmittedAndFilledOrders(t *testing.T) {
+	cfg := testConfig()
+	cfg.DryRun = false
+	cfg.TradingMode = "paper"
+	cfg.Maker.Enabled = false
+	cfg.Taker.Enabled = false
+	cfg.Paper.InitialBalanceUSDC = 1000
+	cfg.Paper.FeeBps = 10
+	cfg.Paper.SlippageBps = 0
+
+	a := New(cfg, nil, nil, nil, nil, nil, nil)
+	a.books.Update(ws.OrderbookEvent{
+		AssetID: "asset-1",
+		Bids:    []ws.OrderbookLevel{{Price: "0.50", Size: "100"}},
+		Asks:    []ws.OrderbookLevel{{Price: "0.51", Size: "100"}},
+	})
+
+	resp := a.placeMarket(context.Background(), "asset-1", "BUY", 10)
+	if resp.ID == "" {
+		t.Fatalf("expected paper market order id, got %+v", resp)
+	}
+
+	stats := a.KPIStats()
+	if got := intFromAny(stats["submitted_orders_daily"]); got < 1 {
+		t.Fatalf("expected submitted_orders_daily >= 1, got %v", stats["submitted_orders_daily"])
+	}
+	if got := intFromAny(stats["filled_orders_daily"]); got < 1 {
+		t.Fatalf("expected filled_orders_daily >= 1, got %v", stats["filled_orders_daily"])
+	}
+}
+
+func intFromAny(v interface{}) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	default:
+		return 0
+	}
+}
+
 func TestRiskSyncTracksRealizedDeltas(t *testing.T) {
 	cfg := testConfig()
 	cfg.Risk.MaxConsecutiveLosses = 2
