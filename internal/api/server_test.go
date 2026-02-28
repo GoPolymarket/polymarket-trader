@@ -294,6 +294,8 @@ func TestHandleRisk(t *testing.T) {
 func TestHandlePaper(t *testing.T) {
 	state := &mockAppState{
 		tradingMode: "paper",
+		pnl:         2.0,
+		unrealPnL:   1.5,
 		paperSnapshot: paper.Snapshot{
 			InitialBalanceUSDC: 1000,
 			BalanceUSDC:        995.5,
@@ -333,5 +335,15 @@ func TestHandlePaper(t *testing.T) {
 	}
 	if inv["asset-1"].(float64) != 12.5 {
 		t.Fatalf("expected inventory asset-1=12.5, got %v", inv["asset-1"])
+	}
+	if resp["realized_pnl_usdc"].(float64) != 2.0 {
+		t.Fatalf("expected realized_pnl_usdc 2.0, got %v", resp["realized_pnl_usdc"])
+	}
+	if resp["unrealized_pnl_usdc"].(float64) != 1.5 {
+		t.Fatalf("expected unrealized_pnl_usdc 1.5, got %v", resp["unrealized_pnl_usdc"])
+	}
+	// 1000 + 2.0 + 1.5 - 0.5 = 1003.0
+	if resp["estimated_equity_usdc"].(float64) != 1003.0 {
+		t.Fatalf("expected estimated_equity_usdc 1003.0, got %v", resp["estimated_equity_usdc"])
 	}
 }

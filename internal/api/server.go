@@ -273,15 +273,21 @@ func (s *Server) handleRisk(w http.ResponseWriter, _ *http.Request) {
 // GET /api/paper — paper-trading account snapshot.
 func (s *Server) handlePaper(w http.ResponseWriter, _ *http.Request) {
 	snap := s.appState.PaperSnapshot()
+	_, _, realized := s.appState.Stats()
+	unrealized := s.appState.UnrealizedPnL()
+	estimatedEquity := snap.InitialBalanceUSDC + realized + unrealized - snap.FeesPaidUSDC
 	s.writeJSON(w, map[string]interface{}{
-		"trading_mode":         s.appState.TradingMode(),
-		"initial_balance_usdc": snap.InitialBalanceUSDC,
-		"balance_usdc":         snap.BalanceUSDC,
-		"fees_paid_usdc":       snap.FeesPaidUSDC,
-		"total_volume_usdc":    snap.TotalVolumeUSDC,
-		"total_trades":         snap.TotalTrades,
-		"allow_short":          snap.AllowShort,
-		"inventory_by_asset":   snap.InventoryByAsset,
+		"trading_mode":          s.appState.TradingMode(),
+		"initial_balance_usdc":  snap.InitialBalanceUSDC,
+		"balance_usdc":          snap.BalanceUSDC,
+		"fees_paid_usdc":        snap.FeesPaidUSDC,
+		"total_volume_usdc":     snap.TotalVolumeUSDC,
+		"total_trades":          snap.TotalTrades,
+		"allow_short":           snap.AllowShort,
+		"inventory_by_asset":    snap.InventoryByAsset,
+		"realized_pnl_usdc":     realized,
+		"unrealized_pnl_usdc":   unrealized,
+		"estimated_equity_usdc": estimatedEquity,
 	})
 }
 
