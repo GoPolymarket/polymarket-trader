@@ -1,0 +1,29 @@
+service: polymarket-trader
+company: company-a
+primary_team: company-a
+secondary_team: company-c
+core_objective: alpha/risk execution with measurable KPIs
+
+modes:
+  - plan
+  - execute
+
+roles:
+  - id: product
+    objective: Define scope and acceptance criteria for this service iteration.
+  - id: architect
+    objective: Validate module boundaries and service dependency contracts.
+  - id: developer
+    objective: Ensure compile-level implementation readiness.
+  - id: qa
+    objective: Verify test readiness and release confidence.
+  - id: sre
+    objective: Verify runtime/deploy operability prerequisites.
+  - id: security
+    objective: Run baseline security and secrets hygiene checks.
+
+quality_gates:
+  required_roles:
+    - developer
+    - qa
+    - security

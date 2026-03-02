@@ -1,0 +1,84 @@
+name: Agent Team Delivery
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - execute
+      company:
+        description: "Owning company/team"
+        required: true
+        default: "platform-core"
+        type: choice
+        options:
+          - platform-core
+          - company-a
+          - company-b
+          - company-c
+      qa_full_test:
+        description: "Run full QA test suite in execute mode"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 1 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  role-matrix:
+    name: "role:${{ matrix.role }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [product, architect, developer, qa, sre, security]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve inputs
+        id: inputs
+        shell: bash
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          COMPANY="${{ github.event.inputs.company }}"
+          QA_FULL_TEST="${{ github.event.inputs.qa_full_test }}"
+
+          if [ -z "$MODE" ]; then MODE="plan"; fi
+          if [ -z "$COMPANY" ]; then COMPANY="platform-core"; fi
+          if [ -z "$QA_FULL_TEST" ]; then QA_FULL_TEST="false"; fi
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "company=$COMPANY" >> "$GITHUB_OUTPUT"
+          echo "qa_full_test=$QA_FULL_TEST" >> "$GITHUB_OUTPUT"
+
+      - name: Run role agent
+        env:
+          AGENT_QA_FULL_TEST: ${{ steps.inputs.outputs.qa_full_test }}
+        run: |
+          bash scripts/ci-agent-role.sh \
+            "${{ matrix.role }}" \
+            "${{ steps.inputs.outputs.mode }}" \
+            "${{ steps.inputs.outputs.company }}" \
+            "${{ github.event.repository.name }}"
+
+      - name: Upload role artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "agent-${{ matrix.role }}"
+          path: artifacts/agent-team
+          if-no-files-found: error
