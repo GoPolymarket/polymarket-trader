@@ -89,4 +89,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh pr merge "${{ steps.ctx.outputs.pr }}" --repo "${{ github.repository }}" --squash --delete-branch --auto
+          gh pr merge "${{ steps.ctx.outputs.pr }}" --repo "${{ github.repository }}" --squash --delete-branch --auto \
+            || gh pr merge "${{ steps.ctx.outputs.pr }}" --repo "${{ github.repository }}" --squash --delete-branch
