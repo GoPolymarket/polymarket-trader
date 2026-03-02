@@ -1,0 +1,74 @@
+name: Dev Auto PR
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to implement"
+        required: true
+        type: string
+      base_branch:
+        description: "Base branch (empty = repository default branch)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  dev:
+    if: >
+      github.event_name == "workflow_dispatch" ||
+      (github.event_name == "issues" &&
+       github.event.issue.pull_request == null &&
+       github.event.label.name == "ready-for-dev")
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-auto-pr-${{ github.event_name == "workflow_dispatch" && inputs.issue_number || github.event.issue.number }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup git identity
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve context
+        id: ctx
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ISSUE="${{ inputs.issue_number }}"
+            BASE="${{ inputs.base_branch }}"
+            if [ -z "$BASE" ]; then BASE="${{ github.event.repository.default_branch }}"; fi
+          else
+            ISSUE="${{ github.event.issue.number }}"
+            BASE="${{ github.event.repository.default_branch }}"
+          fi
+          echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Run dev implementation bot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          bash scripts/dev-bot-implement.sh "${{ steps.ctx.outputs.issue }}" "${{ steps.ctx.outputs.base }}"
+
+      - name: Upload dev artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-bot-issue-${{ steps.ctx.outputs.issue }}
+          path: artifacts/dev
+          if-no-files-found: error

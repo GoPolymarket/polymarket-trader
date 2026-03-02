@@ -1,0 +1,88 @@
+name: PM Requirement Intake
+description: Submit a requirement with acceptance criteria and QA commands for autonomous delivery
+title: "[PM] "
+labels:
+  - pm-requirement
+body:
+  - type: dropdown
+    id: company
+    attributes:
+      label: Company
+      description: Which company/team owns this requirement?
+      options:
+        - platform-core
+        - company-a
+        - company-b
+        - company-c
+    validations:
+      required: true
+
+  - type: textarea
+    id: business_context
+    attributes:
+      label: Business Context
+      description: Why this requirement matters now.
+      placeholder: Describe user pain, business urgency, and expected value.
+    validations:
+      required: true
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: Expected business outcome and KPI target.
+      placeholder: Improve X from A to B before date D.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Clearly define in-scope and out-of-scope.
+      placeholder: "- In scope: ...\n- Out of scope: ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Checklist used by QA for final verification.
+      placeholder: "- [ ] Criterion 1\n- [ ] Criterion 2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation_notes
+    attributes:
+      label: Implementation Notes (for Dev)
+      description: Constraints, architecture hints, and important context.
+      placeholder: APIs, modules, compatibility constraints, etc.
+
+  - type: textarea
+    id: auto_patch
+    attributes:
+      label: Auto Patch (optional)
+      description: Optional unified diff block that dev-bot can apply directly.
+      placeholder: |
+        ```diff
+        --- a/path/to/file.go
+        +++ b/path/to/file.go
+        @@
+        + new code
+        ```
+
+  - type: textarea
+    id: targeted_qa_command
+    attributes:
+      label: Targeted QA Command (optional)
+      description: Requirement-focused test command.
+      placeholder: go test ./... -run TestFeature -count=1
+
+  - type: textarea
+    id: regression_command
+    attributes:
+      label: Regression Command (optional)
+      description: Full regression command after targeted validation.
+      placeholder: go test ./... -count=1

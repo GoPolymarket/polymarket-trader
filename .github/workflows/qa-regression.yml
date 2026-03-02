@@ -1,0 +1,92 @@
+name: QA Regression Gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to validate"
+        required: true
+        type: string
+      auto_merge:
+        description: "Auto-merge to default branch after QA pass"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  qa:
+    if: >
+      github.event_name == "workflow_dispatch" ||
+      (github.event_name == "pull_request" &&
+       contains(join(github.event.pull_request.labels.*.name, ","), "ready-for-qa"))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: qa-regression-${{ github.event_name == "workflow_dispatch" && inputs.pr_number || github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Resolve context
+        id: ctx
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR="${{ inputs.pr_number }}"
+            AUTO="${{ inputs.auto_merge }}"
+            REF="refs/pull/${{ inputs.pr_number }}/head"
+          else
+            PR="${{ github.event.pull_request.number }}"
+            AUTO="true"
+            REF="${{ github.event.pull_request.head.sha }}"
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "auto_merge=$AUTO" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ctx.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run QA validation and regression
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QA_AUTO_MERGE: ${{ steps.ctx.outputs.auto_merge }}
+        shell: bash
+        run: |
+          bash scripts/qa-validate-pr.sh "${{ steps.ctx.outputs.pr }}" "${{ steps.ctx.outputs.auto_merge }}"
+
+      - name: Upload QA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-pr-${{ steps.ctx.outputs.pr }}
+          path: artifacts/qa
+          if-no-files-found: error
+
+      - name: Mark QA pass
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh pr edit "${{ steps.ctx.outputs.pr }}" --repo "${{ github.repository }}" --add-label qa-passed --remove-label ready-for-qa || true
+
+      - name: Auto-merge
+        if: success() && steps.ctx.outputs.auto_merge == "true"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh pr merge "${{ steps.ctx.outputs.pr }}" --repo "${{ github.repository }}" --squash --delete-branch --auto
