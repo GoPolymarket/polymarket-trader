@@ -45,6 +45,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare local replace modules
+        shell: bash
+        run: |
+          if grep -q '=> ../go-builder-relayer-client' go.mod 2>/dev/null; then
+            if [ ! -d ../go-builder-relayer-client ]; then
+              git clone --depth 1 https://github.com/GoPolymarket/go-builder-relayer-client.git ../go-builder-relayer-client
+            fi
+          fi
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
