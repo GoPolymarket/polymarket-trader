@@ -96,6 +96,11 @@ fi
 gh issue edit "$issue_number" --repo "$repo" --add-label pm-approved --add-label ready-for-dev >/dev/null
 gh issue edit "$issue_number" --repo "$repo" --remove-label needs-pm-update >/dev/null || true
 
+# Optional: map PM output into a GitHub Project by project title.
+if [[ -n "${PM_PROJECT_NAME:-}" ]]; then
+  gh issue edit "$issue_number" --repo "$repo" --add-project "$PM_PROJECT_NAME" >/dev/null || true
+fi
+
 gh issue comment "$issue_number" --repo "$repo" --body "PM intake passed for #$issue_number: \"$title\". Marked as **ready-for-dev**." >/dev/null
 
 echo "PM intake passed: $issue_url"
