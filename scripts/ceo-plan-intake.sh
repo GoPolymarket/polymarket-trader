@@ -29,6 +29,7 @@ ensure_label() {
 ensure_label "ceo-plan" "5319E7" "CEO strategic plan"
 ensure_label "needs-ceo-update" "B60205" "CEO plan missing required sections"
 ensure_label "ceo-approved" "0E8A16" "CEO plan passed intake"
+ensure_label "pm-discussion" "D4C5F9" "PM manager discussion in progress"
 ensure_label "ready-for-pm-breakdown" "FBCA04" "Ready for PM manager decomposition"
 
 issue_json="$(gh issue view "$issue_number" --repo "$repo" --json title,body,state,url,labels,number)"
@@ -95,13 +96,14 @@ if [[ -n "$missing_csv" ]]; then
   exit 1
 fi
 
-gh issue edit "$issue_number" --repo "$repo" --add-label ceo-approved --add-label ready-for-pm-breakdown >/dev/null
+gh issue edit "$issue_number" --repo "$repo" --add-label ceo-approved --add-label pm-discussion >/dev/null
 gh issue edit "$issue_number" --repo "$repo" --remove-label needs-ceo-update >/dev/null || true
+gh issue edit "$issue_number" --repo "$repo" --remove-label ready-for-pm-breakdown >/dev/null || true
 
 if [[ -n "${CEO_PROJECT_NAME:-}" ]]; then
   gh issue edit "$issue_number" --repo "$repo" --add-project "$CEO_PROJECT_NAME" >/dev/null || true
 fi
 
-gh issue comment "$issue_number" --repo "$repo" --body "CEO plan intake passed for #$issue_number: \"$title\". Marked as **ready-for-pm-breakdown**." >/dev/null
+gh issue comment "$issue_number" --repo "$repo" --body "CEO plan intake passed for #$issue_number: \"$title\". Enter **pm-discussion** stage. After PM discussion, add label **ready-for-pm-breakdown** to start decomposition." >/dev/null
 
 echo "CEO intake passed: $issue_url"
