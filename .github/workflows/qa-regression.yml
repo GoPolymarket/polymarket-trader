@@ -28,7 +28,7 @@ jobs:
        contains(join(github.event.pull_request.labels.*.name, ','), 'ready-for-qa'))
     runs-on: ubuntu-latest
     concurrency:
-      group: qa-regression-${{ github.event_name == "workflow_dispatch" && inputs.pr_number || github.event.pull_request.number }}
+      group: qa-regression-${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       cancel-in-progress: true
 
     steps:
