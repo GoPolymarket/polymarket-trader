@@ -17,11 +17,11 @@ permissions:
 jobs:
   intake:
     if: >
-      github.event_name == "workflow_dispatch" ||
-      (github.event_name == "issues" &&
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
        github.event.issue.pull_request == null &&
-       (contains(join(github.event.issue.labels.*.name, ","), "pm-requirement") ||
-        (github.event.action == "labeled" && github.event.label.name == "pm-requirement")))
+       (contains(join(github.event.issue.labels.*.name, ','), 'pm-requirement') ||
+        (github.event.action == 'labeled' && github.event.label.name == 'pm-requirement')))
     runs-on: ubuntu-latest
 
     steps:

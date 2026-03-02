@@ -23,10 +23,10 @@ permissions:
 jobs:
   dev:
     if: >
-      github.event_name == "workflow_dispatch" ||
-      (github.event_name == "issues" &&
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
        github.event.issue.pull_request == null &&
-       github.event.label.name == "ready-for-dev")
+       github.event.label.name == 'ready-for-dev')
     runs-on: ubuntu-latest
     concurrency:
       group: dev-auto-pr-${{ github.event_name == "workflow_dispatch" && inputs.issue_number || github.event.issue.number }}

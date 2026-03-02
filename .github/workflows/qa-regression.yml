@@ -23,9 +23,9 @@ permissions:
 jobs:
   qa:
     if: >
-      github.event_name == "workflow_dispatch" ||
-      (github.event_name == "pull_request" &&
-       contains(join(github.event.pull_request.labels.*.name, ","), "ready-for-qa"))
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(join(github.event.pull_request.labels.*.name, ','), 'ready-for-qa'))
     runs-on: ubuntu-latest
     concurrency:
       group: qa-regression-${{ github.event_name == "workflow_dispatch" && inputs.pr_number || github.event.pull_request.number }}
@@ -84,7 +84,7 @@ jobs:
           gh pr edit "${{ steps.ctx.outputs.pr }}" --repo "${{ github.repository }}" --add-label qa-passed --remove-label ready-for-qa || true
 
       - name: Auto-merge
-        if: success() && steps.ctx.outputs.auto_merge == "true"
+        if: success() && steps.ctx.outputs.auto_merge == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

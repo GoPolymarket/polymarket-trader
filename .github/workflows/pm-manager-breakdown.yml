@@ -22,10 +22,10 @@ permissions:
 jobs:
   breakdown:
     if: >
-      github.event_name == "workflow_dispatch" ||
-      (github.event_name == "issues" &&
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
        github.event.issue.pull_request == null &&
-       github.event.label.name == "ready-for-pm-breakdown")
+       github.event.label.name == 'ready-for-pm-breakdown')
     runs-on: ubuntu-latest
 
     steps:
