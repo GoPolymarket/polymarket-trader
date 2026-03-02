@@ -1,0 +1,47 @@
+name: CEO Plan Intake
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "CEO plan issue number"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  intake:
+    if: >
+      github.event_name == "workflow_dispatch" ||
+      (github.event_name == "issues" &&
+       github.event.issue.pull_request == null &&
+       (contains(join(github.event.issue.labels.*.name, ","), "ceo-plan") ||
+        (github.event.action == "labeled" && github.event.label.name == "ceo-plan")))
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve issue number
+        id: ctx
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "issue=${{ inputs.issue_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "issue=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate CEO plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CEO_PROJECT_NAME: ${{ vars.CEO_PROJECT_NAME }}
+        shell: bash
+        run: |
+          bash scripts/ceo-plan-intake.sh "${{ steps.ctx.outputs.issue }}"

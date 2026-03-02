@@ -1,0 +1,86 @@
+name: CEO Project Plan
+description: Strategic plan from CEO to be decomposed by PM managers into executable requirements
+title: "[CEO-PLAN] "
+labels:
+  - ceo-plan
+body:
+  - type: dropdown
+    id: company
+    attributes:
+      label: Company
+      description: Which company/team owns this plan?
+      options:
+        - platform-core
+        - company-a
+        - company-b
+        - company-c
+    validations:
+      required: true
+
+  - type: textarea
+    id: vision
+    attributes:
+      label: Vision
+      description: 6-12 month strategic direction.
+      placeholder: What market/user outcome this project should achieve.
+    validations:
+      required: true
+
+  - type: textarea
+    id: north_star
+    attributes:
+      label: North Star Metric
+      description: One measurable metric that defines success.
+      placeholder: e.g. Active paying users, net revenue retention, latency SLA.
+    validations:
+      required: true
+
+  - type: textarea
+    id: objectives_90d
+    attributes:
+      label: 90-Day Objectives
+      description: Top goals for the next 90 days.
+      placeholder: "- Objective 1\n- Objective 2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: strategic_initiatives
+    attributes:
+      label: Strategic Initiatives
+      description: High-level initiatives to be decomposed by PM managers.
+      placeholder: "- Initiative A\n- Initiative B\n- Initiative C"
+    validations:
+      required: true
+
+  - type: textarea
+    id: in_scope
+    attributes:
+      label: In Scope
+      description: Explicitly in-scope boundaries.
+      placeholder: "- In scope 1\n- In scope 2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of Scope
+      description: Explicitly out-of-scope boundaries.
+      placeholder: "- Out of scope 1\n- Out of scope 2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints_risks
+    attributes:
+      label: Constraints & Risks
+      description: Key constraints, dependencies, and known risks.
+      placeholder: "- Constraint\n- Risk"
+
+  - type: textarea
+    id: decomposition_directive
+    attributes:
+      label: PM Decomposition Directive
+      description: How PM managers should split this plan into requirement issues.
+      placeholder: Split by customer segment / module / release milestones.

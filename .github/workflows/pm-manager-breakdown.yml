@@ -1,0 +1,66 @@
+name: PM Manager Breakdown
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      ceo_issue_number:
+        description: "CEO plan issue number"
+        required: true
+        type: string
+      max_items:
+        description: "Max generated requirement issues"
+        required: false
+        default: "3"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  breakdown:
+    if: >
+      github.event_name == "workflow_dispatch" ||
+      (github.event_name == "issues" &&
+       github.event.issue.pull_request == null &&
+       github.event.label.name == "ready-for-pm-breakdown")
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve context
+        id: ctx
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ISSUE="${{ inputs.ceo_issue_number }}"
+            MAX_ITEMS="${{ inputs.max_items }}"
+          else
+            ISSUE="${{ github.event.issue.number }}"
+            MAX_ITEMS="3"
+          fi
+          if [ -z "$MAX_ITEMS" ]; then MAX_ITEMS="3"; fi
+          echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
+          echo "max_items=$MAX_ITEMS" >> "$GITHUB_OUTPUT"
+
+      - name: Run PM manager breakdown
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          PM_BREAKDOWN_MAX_ITEMS: ${{ steps.ctx.outputs.max_items }}
+        shell: bash
+        run: |
+          bash scripts/pm-breakdown.sh "${{ steps.ctx.outputs.issue }}"
+
+      - name: Upload breakdown artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pm-breakdown-${{ steps.ctx.outputs.issue }}
+          path: artifacts/pm-breakdown
+          if-no-files-found: error
