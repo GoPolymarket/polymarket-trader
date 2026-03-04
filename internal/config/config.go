@@ -42,6 +42,7 @@ type TelegramConfig struct {
 type APIConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Addr    string `yaml:"addr"`
+	Token   string `yaml:"token"`
 }
 
 type PaperConfig struct {
@@ -219,5 +220,8 @@ func (c *Config) ApplyEnv() {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.BuilderSyncInterval = d
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TRADER_API_TOKEN")); v != "" {
+		c.API.Token = v
 	}
 }

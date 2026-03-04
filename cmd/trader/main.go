@@ -104,6 +104,7 @@ func main() {
 	var apiServer *api.Server
 	if cfg.API.Enabled {
 		apiServer = api.NewServer(cfg.API.Addr, a, a.Portfolio, a.BuilderTracker)
+		apiServer.SetAuthToken(cfg.API.Token)
 		if err := apiServer.Start(ctx); err != nil {
 			log.Printf("warning: api server failed to start: %v", err)
 		}

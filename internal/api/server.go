@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -62,6 +63,7 @@ type Server struct {
 	portfolio  PortfolioProvider
 	builder    BuilderProvider
 	startedAt  time.Time
+	authToken  string
 }
 
 // NewServer creates a new API server bound to addr.
@@ -104,10 +106,18 @@ func NewServer(addr string, appState AppState, portfolio PortfolioProvider, buil
 
 	s.httpServer = &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           s.withAuth(mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	return s
+}
+
+// SetAuthToken enables lightweight token auth for all API endpoints except health and readiness.
+func (s *Server) SetAuthToken(token string) {
+	s.authToken = strings.TrimSpace(token)
 }
 
 // Start begins serving HTTP requests.
@@ -128,6 +138,40 @@ func (s *Server) Start(_ context.Context) error {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/health" || r.URL.Path == "/api/ready" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		expected := strings.TrimSpace(s.authToken)
+		if expected == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := extractAuthToken(r)
+		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func extractAuthToken(r *http.Request) string {
+	if key := strings.TrimSpace(r.Header.Get("X-API-Key")); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(r.Header.Get("X-Gateway-Key")); key != "" {
+		return key
+	}
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		return strings.TrimSpace(authHeader[len("bearer "):])
+	}
+	return ""
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, v interface{}) {

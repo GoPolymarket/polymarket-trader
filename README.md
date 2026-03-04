@@ -158,6 +158,7 @@ All credentials are loaded from environment variables (see `.env.example`):
 | `BUILDER_SECRET` | Builder program secret |
 | `BUILDER_PASSPHRASE` | Builder program passphrase |
 | `TRADER_DRY_RUN` | Override dry-run mode (`true`/`1`) |
+| `TRADER_API_TOKEN` | Optional dashboard API token (`X-API-Key` or `Authorization: Bearer`) |
 | `TRADER_TRADING_MODE` | Override mode (`paper`/`live`) |
 | `TRADER_PAPER_ALLOW_SHORT` | Override paper shorting (`true`/`1` enables synthetic shorting) |
 | `TRADER_BUILDER_SYNC_INTERVAL` | Override builder sync interval (Go duration, e.g. `30s`, `5m`) |
