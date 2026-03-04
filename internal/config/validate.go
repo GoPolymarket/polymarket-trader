@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -23,6 +24,15 @@ func (c Config) Validate() error {
 	}
 	if c.BuilderSyncInterval <= 0 {
 		return fmt.Errorf("builder_sync_interval must be > 0, got %s", c.BuilderSyncInterval)
+	}
+	if c.API.Enabled {
+		addr := strings.TrimSpace(c.API.Addr)
+		if addr == "" {
+			return fmt.Errorf("api.addr must be set when api.enabled=true")
+		}
+		if strings.TrimSpace(c.API.Token) == "" && !isLoopbackAddr(addr) {
+			return fmt.Errorf("api.token is required when api.enabled=true and api.addr is not loopback")
+		}
 	}
 
 	if c.Risk.MaxOpenOrders <= 0 {
@@ -54,4 +64,25 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func isLoopbackAddr(addr string) bool {
+	host := strings.TrimSpace(addr)
+	if strings.HasPrefix(host, ":") {
+		return false
+	}
+
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

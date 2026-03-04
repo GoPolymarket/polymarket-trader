@@ -99,3 +99,28 @@ func TestValidateInvalidBuilderSyncInterval(t *testing.T) {
 		t.Fatal("expected non-positive builder_sync_interval to fail validation")
 	}
 }
+
+func TestValidateAPITokenRequiredForNonLoopbackAddress(t *testing.T) {
+	cfg := Default()
+	cfg.API.Enabled = true
+	cfg.API.Addr = ":8080"
+	cfg.API.Token = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected empty api.token on non-loopback api.addr to fail validation")
+	}
+}
+
+func TestValidateAPITokenOptionalOnLoopbackAddress(t *testing.T) {
+	cfg := Default()
+	cfg.API.Enabled = true
+	cfg.API.Addr = "127.0.0.1:8080"
+	cfg.API.Token = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected loopback api.addr with empty token to be valid, got %v", err)
+	}
+
+	cfg.API.Addr = "localhost:8080"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected localhost api.addr with empty token to be valid, got %v", err)
+	}
+}

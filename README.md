@@ -158,7 +158,7 @@ All credentials are loaded from environment variables (see `.env.example`):
 | `BUILDER_SECRET` | Builder program secret |
 | `BUILDER_PASSPHRASE` | Builder program passphrase |
 | `TRADER_DRY_RUN` | Override dry-run mode (`true`/`1`) |
-| `TRADER_API_TOKEN` | Optional dashboard API token (`X-API-Key` or `Authorization: Bearer`) |
+| `TRADER_API_TOKEN` | Dashboard API token (`X-API-Key` or `Authorization: Bearer`), required if `api.enabled=true` on non-loopback bind |
 | `TRADER_TRADING_MODE` | Override mode (`paper`/`live`) |
 | `TRADER_PAPER_ALLOW_SHORT` | Override paper shorting (`true`/`1` enables synthetic shorting) |
 | `TRADER_BUILDER_SYNC_INTERVAL` | Override builder sync interval (Go duration, e.g. `30s`, `5m`) |
@@ -190,6 +190,7 @@ If Telegram notifications are enabled, the bot alerts on risk cooldown and also 
 ## Dashboard API
 
 If `api.enabled=true`, the bot exposes runtime endpoints including:
+- Auth rule: non-loopback `api.addr` requires `TRADER_API_TOKEN`; loopback-only binds can run without a token for local dev.
 - `GET /api/health` (liveness probe)
 - `GET /api/ready` (readiness probe)
 - `GET /api/status`
